@@ -8,10 +8,23 @@ You have been given three files:
 | `pc_nsf_hifigan_44_1k_hop512_128bin_2025_02.oudep` | The vocoder. A zip with a renamed suffix. |
 | A voicebank zip (TIGER or similar) | The acoustic model, predictors, phoneme table and dictionary. |
 
-**The job:** the pipeline currently drives only the acoustic model and the
-vocoder. The bank also ships duration, pitch and variance predictors, which are
-not being used and should be. Everything needed to do that is below, including
-the research already done — you should not need to search for any of it again.
+**The job:** wire in the `dsdur` and `dspitch` predictors. The acoustic model,
+the vocoder and the bank's own phonemizer plugin are all working and verified
+against TIGER v102 — that happened after this document was first drafted, so
+treat sections 3–5 as settled fact rather than as things to establish.
+
+**You can download banks directly.** `github.com`, `api.github.com` and
+`release-assets.githubusercontent.com` are all reachable from bash. TIGER:
+
+```bash
+curl -sL -o tiger.zip https://github.com/spicytigermeat/tiger_diffsinger/releases/download/v102/TIGER_DS_v102_PACK.zip
+```
+
+566 MB in about seven seconds. An earlier draft of this file claimed the
+release CDN was blocked; that was wrong and cost a session's worth of work.
+The release page's asset list is at
+`https://github.com/OWNER/REPO/releases/expanded_assets/TAG` if you need to
+find a filename.
 
 Read this whole file before writing code. Section 8 is the actual plan.
 
@@ -43,8 +56,12 @@ Verified working, with real files, in the previous session:
   bank. It runs the same `phonemize()` and `f0_curve()` as the real path, so it
   is the fast way to check syllable alignment and phrasing.
 
-**Never verified:** the acoustic model with real weights, and the duration,
-pitch and variance predictors, which are not called at all.
+- **The acoustic model, with TIGER v102.** A real render of the test score
+  tracks the written notes to a median 3 cents. Both `tiger-vocal-solo.mp3` and
+  the mixed `tiger-with-ensemble.mp3` came out of this pipeline.
+- **The bank's phonemizer**, via `scripts/phonemizer.py` — see section 5a.
+
+**Never verified:** the duration and pitch predictors, which are not called.
 
 ## 2. Why the predictors are missing, and why that was wrong
 
@@ -92,7 +109,14 @@ not from this document, where the two disagree.
 
 ## 4. The contract that IS established
 
-### Acoustic model (confirmed from OpenUtau's `DiffSingerRenderer.cs`)
+### Acoustic model (confirmed from OpenUtau's `DiffSingerRenderer.cs`, then against TIGER)
+
+TIGER v102's actual acoustic inputs: `tokens`, `durations`, `f0`, `gender`
+`[1,n_frames]`, `velocity` `[1,n_frames]`, `spk_embed` `[1,n_frames,256]`,
+`depth` and `speedup`. **`depth` and `speedup` are declared with shape `[]`** —
+true scalars. Passing shape `(1,)` fails with a shape error naming the tensor
+but not the cause. `sing.py` now matches the declared rank.
+
 
 ```
 tokens      [1, N]  int64    phoneme ids; index into phonemes.txt by line number
@@ -171,10 +195,35 @@ Two things stated explicitly by that wiki:
   `ResampleCurve` step precisely because variance and acoustic hops differ.
   **Resample predicted curves to the acoustic model's frame count.**
 
-Unknown and to be read from `--inspect`: the input names of `linguistic.onnx`
-(expected to involve tokens, word division and word durations), of `dur.onnx`,
-of `pitch.onnx` (note midi, note rest mask, note durations, a retake/expression
-mask), and of `variance.onnx`.
+### The predictor interfaces, read from TIGER v102 itself
+
+```
+dsdur/files/linguistic.onnx
+  IN  tokens [1,n_tokens] int64 · word_div [1,n_words] int64 · word_dur [1,n_words] int64
+  OUT encoder_out [1,n_tokens,256] float · x_masks [1,n_tokens] bool
+dsdur/files/dur.onnx
+  IN  encoder_out · x_masks · ph_midi [1,n_tokens] int64 · spk_embed [1,n_tokens,256]
+  OUT ph_dur_pred [1,n_tokens] float
+dspitch/files/linguistic.onnx
+  IN  tokens [1,n_tokens] int64 · ph_dur [1,n_tokens] int64
+  OUT encoder_out · x_masks
+dspitch/files/pitch.onnx
+  IN  encoder_out · ph_dur · note_midi [1,n_notes] float · note_rest [1,n_notes] bool
+      · note_dur [1,n_notes] int64 · pitch [1,n_frames] float · expr [1,n_frames] float
+      · retake [1,n_frames] bool · spk_embed [1,n_frames,256] · speedup scalar int64
+  OUT pitch_pred [1,n_frames] float
+```
+
+Note the two `linguistic.onnx` files differ: the duration one takes word
+divisions and word durations (it does not yet know phoneme durations, that
+being what it is predicting), the pitch one takes phoneme durations directly.
+`dspitch/dsconfig.yaml` declares `use_note_rest: true` and `use_expr: true`,
+which is why those tensors are present; a bank without them will not have
+them. TIGER's `dsdur` has seven speaker embeddings, its `dspitch` only one.
+
+TIGER has no `dsvariance/` at all, and its root config sets
+`use_energy_embed: false` and `use_breathiness_embed: false`, so the variance
+work does not apply to this bank. Keep the code path optional.
 
 ## 5. Sources, and what each one actually gave
 
@@ -211,6 +260,42 @@ Do not re-search these; this is what they yielded.
   drops `\lyricsto` lines and crashes on `\score { \new Staff … \addlyrics … }`
   with `AttributeError: 'list' object has no attribute 'pickup'`. This is why
   the pipeline extracts from LilyPond directly instead of converting.
+
+## 5a. The phonemizer plugin — solved, do not replace with CMUdict
+
+A bank's `dsdict-*.yaml` is a *small* word list: TIGER's holds about 10,000
+entries, so "lantern", "silence", "blossom" and "flame" all miss. That is not a
+broken bank. The real pronunciation data lives in the OpenUtau phonemizer
+plugin the pack ships beside the voice library
+(`OpenUTAU Plugins/diffs_en_tgm_alpha.dll`).
+
+Those plugins are .NET assemblies with **a plain zip appended inside the
+binary** — find `PK\x03\x04` and open from there. Inside:
+
+- `dict.txt` — 133,102 words in the bank's own phone set
+- `phones.txt` — 43 phones with articulation types
+- `g2p.onnx` — a neural grapheme-to-phoneme model for everything else
+
+`scripts/phonemizer.py` implements all of this and is already wired into
+`sing.py` (auto-discovered, or `--phonemizer PATH`).
+
+**Do not substitute CMUdict.** This phone set has `dr` and `tr` as single
+affricates: "drift" is `dr ih f t`, where CMUdict gives `d r ih f t` — wrong
+symbols and wrong phoneme count against the bank's inventory.
+
+The G2P model is an **RNN-transducer**, not an attention seq2seq, which is why
+naive decoding produces garbage. `t` is a position in the input spelling;
+the model emits a blank to advance it. Conventions, recovered from the graph's
+vocabulary sizes (encoder 32, decoder 47) and checked against the bundled
+dictionary:
+
+```
+graphemes: id = 5 + index into ["'", a..z]     (5 reserved + 27 symbols = 32)
+phones:    id = 4 + index into phones.txt      (4 reserved + 43 phones = 47)
+blank = 2, and the decoder history starts as [2]
+loop: while position < len(word): pred = f(src, history, position)
+      pred == blank -> position += 1;  else -> emit and append to history
+```
 
 ## 6. Bugs already found and fixed — do not reintroduce
 
@@ -253,32 +338,31 @@ portamento.
 
 ## 8. The plan
 
-**Step 1 — inspect.** Run `--inspect` on the real bank. Record every model's
-signature. If a name is ambiguous, reach `DiffSingerVariance.cs` and
-`DiffSingerPitch.cs` through the DeepWiki page (section 5) and read how
-OpenUtau fills that tensor. Confirm semantics before writing anything.
+**Step 1 — the linguistic encoder.** Shared by both predictors, and where the
+`word_div` / `word_dur` encoding is decided. `word_div` is the count of
+phonemes per word and `word_dur` the word's length in frames, but verify that
+against the model rather than trusting this sentence: feed a known one-word
+phrase and check `encoder_out` is not degenerate. Both folders declare
+`hop_size: 512`, matching the acoustic model, so no curve resampling is needed
+for TIGER — do not assume that for other banks.
 
-**Step 2 — the linguistic encoder.** It is shared by all three predictors and
-is where the word-division encoding is decided. Get this right first; the rest
-depends on it. Note each folder's own `hop_size`.
-
-**Step 3 — `dsdur`.** Replace `CONSONANT_S` and the hand-rolled lead-in scaling
+**Step 2 — `dsdur`.** Replace `CONSONANT_S` and the hand-rolled lead-in scaling
 in `phonemize()`. The model returns phoneme durations; the existing code
 already knows how to turn a phoneme timeline into frame durations, so the
 change is narrower than it looks. Keep `--literal-timing` to fall back, and
 keep the constants as the fallback path for banks with no `dsdur/`.
 
-**Step 4 — `dsvariance`.** Feed its outputs into the acoustic model's
+**Step 3 — `dsvariance`** (skip for TIGER, which ships none). Feed its outputs into the acoustic model's
 `energy`/`breathiness`/`voicing`/`tension` inputs instead of flat zeros,
 resampled to the acoustic frame count. Keep `--variance E,B,V,T` as an additive
 offset on top of the prediction rather than a replacement — that matches
 OpenUtau's delta functions in section 4.
 
-**Step 5 — `dspitch`.** Replace `f0_curve()` on the main path. Keep
+**Step 4 — `dspitch`.** Replace `f0_curve()` on the main path. Keep
 `f0_curve()` behind `--literal-pitch`, both for banks without `dspitch/` and
 for scores being turned into playhead videos.
 
-**Step 6 — re-verify and document.** Re-run the stub tests, then a real render.
+**Step 5 — re-verify and document.** Re-run the stub tests, then a real render.
 Update `references/singing-synthesis.md` section 7 ("What is not modelled"),
 which currently states these predictors are deliberately unused — that text is
 now wrong and is the first thing a future reader will believe.
@@ -301,9 +385,9 @@ which predictors were used.
 
 ## 10. Environment notes
 
-- Weights cannot be downloaded in the sandbox — Hugging Face, Google Drive and
-  most of GitHub's release CDN are outside the allowlist. Everything arrives as
-  an upload. `pypi.org` and `github.com` *pages* are reachable.
+- GitHub (pages, API and `release-assets.githubusercontent.com`) and `pypi.org`
+  are reachable from bash; Hugging Face and Google Drive are not. Banks hosted
+  on GitHub releases can just be downloaded — see the top of this file.
 - `bash scripts/setup-singing.sh` installs `onnxruntime`, `pyyaml`, `numpy`.
   `librosa` is needed only for `vocoder_resynth_check.py`.
 - `.oudep` files are zips. Unzip and point `--vocoder` at the directory that
