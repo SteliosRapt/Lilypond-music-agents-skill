@@ -306,6 +306,21 @@ and the phonemes are spread evenly, which sounds like a mispronunciation rather
 than a crash. Re-hyphenate the word in `\lyricmode` to match the dictionary's
 vowel count.
 
+**A word comes out wrong and you want to know why before re-rendering.** Ask
+the bank directly:
+
+```bash
+python3 scripts/phonemizer.py ~/voices/tiger lanterns drift quasimodal
+#   lanterns    l ae n t er n z            dictionary
+#   drift       dr ih f t                  dictionary
+#   quasimodal  k w aa s ah m ow dx ah l   G2P (a guess)
+```
+
+Anything marked as a guess came from the plugin's neural grapheme-to-phoneme
+model rather than its 133,000-word dictionary, and that is where mispronounced
+words come from. The fix is to respell the word in `\lyricmode`, and the vowel
+count is what the hyphenation has to match.
+
 **Everything is a semitone off / notes in the wrong octave.** Check the score's
 `\transposition` — the extractor reports sounding pitch, and a transposing
 vocal part is unusual but possible.

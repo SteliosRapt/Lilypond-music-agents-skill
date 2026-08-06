@@ -270,7 +270,9 @@ glance at a thumbnail.
 - `scripts/preview_voice.py` -- the preview voice: letter-to-sound rules and a
   three-formant synthesiser, for auditioning a line without a voicebank.
 - `scripts/phonemizer.py` -- reads the bank's own OpenUtau phonemizer plugin
-  (dictionary plus neural G2P) without OpenUtau.
+  (dictionary plus neural G2P) without OpenUtau. Run it directly
+  (`python3 scripts/phonemizer.py ~/voices/mybank lanterns drift`) to see how a
+  bank will pronounce a word, and whether that pronunciation is a guess.
 - `scripts/dev/selftest.py` -- runs the whole pipeline against a score written
   to break it and checks 50-odd invariants. Run it after changing any of the
   above; `--video` includes playhead verification, `--voice` uses a real bank

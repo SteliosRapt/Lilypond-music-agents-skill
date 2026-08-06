@@ -166,6 +166,33 @@ class Phonemizer:
         return out or None
 
 
+def _main():
+    """Phonemise words from the command line.
+
+        python3 scripts/phonemizer.py ~/voices/tiger lanterns drift silence
+
+    The fastest way to answer "how will the bank say this word", which is the
+    question behind most unintelligible lines. Each word is marked with where
+    its pronunciation came from -- the plugin's dictionary, or its neural G2P,
+    which is a guess and is where to look first when a word comes out wrong.
+    """
+    import sys
+    if len(sys.argv) < 3:
+        sys.exit("usage: phonemizer.py <bank-or-plugin-path> WORD [WORD ...]")
+    where = sys.argv[1]
+    path = find_plugin(where) or where
+    ph = Phonemizer.from_plugin(path)
+    print(f"plugin: {path}")
+    print(f"{len(ph.entries)} dictionary entries, {len(ph.phones)} phones, "
+          f"neural G2P {'present' if ph._model else 'absent'}\n")
+    for word in sys.argv[2:]:
+        key = word.lower()
+        known = key in ph.entries
+        out = ph(key)
+        source = "dictionary" if known else "G2P (a guess)" if out else "nothing"
+        print(f"  {word:<16} {' '.join(out) if out else '-':<28} {source}")
+
+
 def find_plugin(bank_dir):
     """Look for a phonemizer plugin shipped alongside a bank.
 
@@ -180,3 +207,7 @@ def find_plugin(bank_dir):
         if dlls:
             return dlls[0]
     return None
+
+
+if __name__ == "__main__":
+    _main()

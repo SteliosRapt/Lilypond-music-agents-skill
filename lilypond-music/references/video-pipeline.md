@@ -128,6 +128,13 @@ prints one line per column:
   system, and check the residual. On a well-behaved score it lands under 2px;
   anything worse means the dump and the page image are describing different
   engravings, and that system falls back to bar-linear.
+
+  The two lists are not always the same length, and equality was once required.
+  A breakable column can exist where no barline is *printed* -- a lyric extender
+  ending mid-bar is enough, and `lead-sheet.ly` has one, which cost its last
+  system every note-level anchor. A surplus of a few boundaries is now resolved
+  by fitting each candidate subset, keeping the system's own edges, and taking
+  the best; the residual check still decides whether to believe the result.
 - **Which second.** LilyPond's moments and its MIDI share an origin, so a moment
   is a tick is a second through the tempo map already parsed
   (`midi_timing.moment_converter`). Nothing is matched against MIDI note-on
