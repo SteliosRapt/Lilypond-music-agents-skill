@@ -5,6 +5,12 @@ The job this file originally described -- wiring the DiffSinger `dsdur` and
 verified against TIGER v102**. What follows is the state of the skill, what was
 established about the models along the way, and what is left.
 
+**If you have been sent here to improve the code rather than to use it, read
+`handoff-refactor.md` instead** -- unit tests, a shared MIDI reader, splitting
+`sing.py`, and the one behavioural question still open (section 7 below). This
+file is the record of what the skill does and what was established about the
+models; that one is the queue of work.
+
 Run `python3 lilypond-music/scripts/dev/selftest.py` before believing any of it.
 It builds a stub voicebank, renders a score written to break the pipeline, and
 checks 51 invariants in about a minute. `--video` adds playhead verification;
