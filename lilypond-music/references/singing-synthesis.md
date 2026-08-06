@@ -181,29 +181,29 @@ All three are seeded and deterministic — the same score renders the same take.
   as a syllable whose text is a single space. It is dropped, and the note
   becomes a melisma on the vowel before it.
 
-## 7. What is not modelled
+## 7. What is and is not modelled
 
-`sing.py` runs the two models every bank ships — acoustic and vocoder — and
-supplies durations and pitch itself. Banks may also include `dsdur`, `dspitch`
-and `dsvariance` models, which OpenUtau uses to *predict* those. Those are not
-called, because a score already states the durations and pitches; what is lost
-is the learned human deviation from them, which is why the synthetic
-portamento and vibrato above exist at all.
+The bank ships more than the acoustic model, and the pipeline should use all of
+it. Current state:
 
-Consequences to expect:
+| Model | Used | Notes |
+|---|---|---|
+| acoustic | yes | verified against TIGER v102 |
+| vocoder | yes | verified by analysis-resynthesis, 0.944 mel correlation |
+| phonemizer plugin | yes | see `scripts/phonemizer.py` |
+| `dsdur` | **not yet** | phoneme durations within a note; would replace the `CONSONANT_S` table |
+| `dspitch` | **not yet** | expressive f0 around the written notes; would replace `f0_curve()` |
+| `dsvariance` | n/a for TIGER | this bank sets `use_energy_embed: false` and ships no `dsvariance/` |
 
-- Timing is exact rather than expressive. No agogic stretch, no anticipation.
-- If the acoustic model requires energy, breathiness, voicing or tension
-  inputs, they are supplied flat (`--variance`), which sounds slightly more
-  even than the same bank driven from OpenUtau.
-- Multi-speaker banks work, but as one fixed voice mode for the whole line
-  (`--voice-mode`). OpenUtau can crossfade between modes across a phrase; a
-  score has nowhere to say that.
-- One tempo per score. Mid-score `\tempo` changes reach the printed page and
-  the MIDI but not the sung line.
-- Dynamics do not reach the singer. Hairpins shape the instruments through
-  velocity and CC11; the vocal is one level, adjusted as a whole with
-  `--vocal-gain`.
+An earlier version of this document argued the duration and pitch predictors
+were unnecessary because the score states durations and pitches. That was
+wrong. `dsdur` predicts *phoneme* durations inside each note -- how a syllable
+splits between consonant and vowel -- which the score says nothing about, and
+`dspitch` renders the singer's deviation around notes it is given rather than
+guessing a melody. Both are better than the hand-written approximations here.
+
+Their interfaces are known (read them with `sing.py --inspect`); wiring them is
+the next piece of work.
 
 ## 8. Troubleshooting
 

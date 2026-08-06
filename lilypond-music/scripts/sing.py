@@ -91,7 +91,7 @@ def load_yaml(path):
 class Voice:
     """A DiffSinger bank: config, phoneme table, dictionary, ONNX sessions."""
 
-    def __init__(self, path, vocoder=None):
+    def __init__(self, path, vocoder=None, plugin=None):
         try:
             import onnxruntime
         except ImportError:
@@ -108,6 +108,9 @@ class Voice:
 
         self.phonemes = self._load_phonemes(self.dir / self.cfg["phonemes"])
         self.symbols, self.entries = self._load_dict()
+        self.from_plugin, self.from_g2p = set(), set()
+        self._phonemizer = self._load_phonemizer(plugin)
+        self.spelled_out = set()
         # Multi-speaker banks -- "voice modes", "vocal colours" -- carry one
         # embedding file per mode and expect the chosen one on every frame.
         self.speakers = [str(s) for s in (self.cfg.get("speakers") or [])]
@@ -143,8 +146,12 @@ class Voice:
 
     def _load_dict(self):
         """Read dsdict*.yaml: phoneme types plus the word -> phonemes table."""
-        cands = sorted(self.dir.glob("dsdict*.yaml"))
-        preferred = [p for p in cands if p.name in ("dsdict-en.yaml", "dsdict.yaml")]
+        # TIGER keeps no dictionary at the bank root: the word list lives in
+        # dsdur/ and dspitch/ beside the predictors that use it. Search the
+        # whole tree, and prefer an explicitly English one.
+        cands = sorted(self.dir.rglob("dsdict*.yaml"))
+        preferred = ([p for p in cands if "-en." in p.name]
+                     + [p for p in cands if p.name == "dsdict.yaml"])
         for path in (preferred + cands):
             data = load_yaml(path) or {}
             entries = {}
@@ -161,7 +168,22 @@ class Voice:
         die("no usable dsdict*.yaml in the bank. English banks ship one; "
             "without it there is no way to turn words into phonemes.")
 
+    def _load_phonemizer(self, plugin):
+        import phonemizer as ph_mod
+        path = plugin or ph_mod.find_plugin(self.dir)
+        if not path:
+            return None
+        try:
+            return ph_mod.Phonemizer.from_plugin(path)
+        except Exception as e:
+            print(f"  ! could not read the phonemizer plugin {Path(path).name}: "
+                  f"{str(e)[:120]}")
+            return None
+
     def _find_vocoder(self):
+        named = self.cfg.get("vocoder")
+        if named and (self.dir / str(named)).is_dir():
+            return self.dir / str(named)
         for name in ("vocoder", "nsf_hifigan", "dsvocoder"):
             if (self.dir / name).is_dir():
                 return self.dir / name
@@ -194,14 +216,49 @@ class Voice:
         return cfg, onnxruntime.InferenceSession(
             str(path), opts, providers=["CPUExecutionProvider"])
 
+    def guess(self, word):
+        """Words the bank's own dictionary does not cover.
+
+        A miss in the bank's dsdict is normal, not a broken bank: TIGER ships
+        about ten thousand words there and expects its OpenUtau phonemizer
+        plugin to cover the rest. So ask the plugin -- it carries a 133,000
+        word dictionary in this bank's own phone set, plus a neural G2P for
+        whatever is not in that. See scripts/phonemizer.py.
+
+        Do not substitute a general English dictionary here. This phone set
+        has `dr` and `tr` as single affricates, so CMUdict's `d r` for "drift"
+        would be both the wrong symbols and the wrong phoneme count.
+        """
+        if self._phonemizer is None:
+            return self._spell_out(word)
+        out = self._phonemizer(word)
+        if out and all(p in self.phonemes for p in out):
+            (self.from_g2p if word.lower() in self._phonemizer.predicted
+             else self.from_plugin).add(word)
+            return out
+        return self._spell_out(word)
+
+    def _spell_out(self, word):
+        """Last resort: letter-to-sound rules, which are frequently wrong."""
+        import preview_voice
+        guessed = [p for p in preview_voice.letters_to_phonemes(word)
+                   if p in self.phonemes]
+        if guessed:
+            self.spelled_out.add(word)
+            return guessed
+        return None
+
     def speaker_embedding(self, name=None):
         """Load a voice mode's `.emb`: a raw little-endian float32 vector."""
         if not self.speakers:
             return None, None
         chosen = name or self.speakers[0]
         if chosen not in self.speakers:
+            match = [s for s in self.speakers if Path(s).name == chosen]
+            chosen = match[0] if match else chosen
+        if chosen not in self.speakers:
             die(f"voice mode {chosen!r} not in this bank. Available: "
-                f"{', '.join(self.speakers)}")
+                f"{', '.join(Path(s).name for s in self.speakers)}")
         path = self.dir / f"{chosen}.emb"
         if not path.exists():
             die(f"the bank lists voice mode {chosen!r} but has no {path.name}")
@@ -628,24 +685,41 @@ def render_phrase(voice, timeline, notes, tempo, steps, variance, depth=1.0,
 
     f0 = f0_curve(notes, tempo, start_s, total, frame_s)
 
-    avail = {i.name for i in voice.acoustic.get_inputs()}
+    meta = {i.name: i for i in voice.acoustic.get_inputs()}
+    avail = set(meta)
+
+    def shaped(name, value, dtype):
+        """Match the rank the model declares.
+
+        `depth` and `speedup` are declared with shape [] -- true scalars, not
+        one-element vectors. Feeding shape (1,) fails at run time with a shape
+        mismatch that names the tensor but not the fix.
+        """
+        rank = len(meta[name].shape)
+        return np.array(value, dtype=dtype) if rank == 0 else \
+            np.array([value], dtype=dtype)
     feed = {
         "tokens": np.array([tokens], dtype=np.int64),
         "durations": np.array([durations], dtype=np.int64),
         "f0": f0[None, :],
     }
+    speedup = max(1, 1000 // max(steps, 1))
+    while 1000 % speedup and speedup > 1:
+        speedup -= 1
     if "speedup" in avail:
-        speedup = max(1, 1000 // max(steps, 1))
-        while 1000 % speedup and speedup > 1:
-            speedup -= 1
-        feed["speedup"] = np.array([speedup], dtype=np.int64)
+        feed["speedup"] = shaped("speedup", speedup, np.int64)
     if "steps" in avail:
-        feed["steps"] = np.array([steps], dtype=np.int64)
+        feed["steps"] = shaped("steps", steps, np.int64)
     if "depth" in avail:
-        kind = next(i for i in voice.acoustic.get_inputs() if i.name == "depth")
-        feed["depth"] = (np.array([depth], dtype=np.float32)
-                         if "float" in kind.type else
-                         np.array([int(depth * 1000)], dtype=np.int64))
+        # Shallow diffusion: depth is where denoising starts, capped by the
+        # bank's max_depth, and it has to be a whole number of speedup strides.
+        if "float" in meta["depth"].type:
+            feed["depth"] = shaped("depth", depth, np.float32)
+        else:
+            cap = int(voice.cfg.get("max_depth", 1000))
+            d = min(int(depth * 1000) if depth <= 1.0 else int(depth), cap)
+            feed["depth"] = shaped("depth", max(speedup, d // speedup * speedup),
+                                   np.int64)
     for name, level in (("energy", variance["energy"]),
                         ("breathiness", variance["breathiness"]),
                         ("voicing", variance["voicing"]),
@@ -734,6 +808,10 @@ def main():
     ap.add_argument("--preview", action="store_true",
                     help="use the built-in formant voice instead of a voicebank: "
                          "robotic, instant, and enough to check the alignment")
+    ap.add_argument("--phonemizer", metavar="PATH",
+                    help="the bank's OpenUtau phonemizer plugin (.dll) or a "
+                         "folder holding one; found automatically if it sits "
+                         "near the bank")
     ap.add_argument("--vocoder", help="vocoder package directory (nsf_hifigan)")
     ap.add_argument("-o", "--outdir", default="out")
     ap.add_argument("--line", type=int, default=1, help="which lyric line to sing")
@@ -769,12 +847,13 @@ def main():
         print("  voice   built-in formant preview (no voicebank): "
               "timing and pitch are real, the timbre is not")
     elif args.voice:
-        voice = Voice(args.voice, args.vocoder)
+        voice = Voice(args.voice, args.vocoder, args.phonemizer)
         print(f"  voice   {voice.dir.name}: {len(voice.phonemes)} phonemes, "
               f"{len(voice.entries)} dictionary entries, {voice.sample_rate} Hz")
         if voice.speakers:
             chosen = args.voice_mode or voice.speakers[0]
-            print(f"  modes   {', '.join(voice.speakers)}  -> singing as {chosen}")
+            print(f"  modes   {', '.join(Path(s).name for s in voice.speakers)}"
+                  f"  -> singing as {Path(chosen).name}")
     else:
         die("pass --voice /path/to/voicebank, or --preview to hear the line "
             "through the built-in formant voice")
@@ -809,11 +888,23 @@ def main():
         print(f"  phrase {i}/{len(phrases)}: {len(timeline)} phonemes, "
               f"{len(audio) / voice.sample_rate:.1f}s at {start_s:.1f}s")
 
+    plugged = getattr(voice, "from_plugin", set())
+    guessed = getattr(voice, "from_g2p", set())
+    if plugged:
+        print(f"  {len(plugged)} word(s) from the phonemizer plugin's dictionary")
+    if guessed:
+        print(f"  {len(guessed)} word(s) from the plugin's neural G2P: "
+              f"{', '.join(sorted(guessed)[:8])}"
+              f"{' ...' if len(guessed) > 8 else ''}")
+    spelled = getattr(voice, "spelled_out", set())
+    if spelled:
+        print(f"  ! spelled out by rule, pronunciation is a guess: "
+              f"{', '.join(sorted(spelled))}")
     if warn:
-        print(f"  ! not in the bank's dictionary, sung as a placeholder: "
+        print(f"  ! no pronunciation at all, sung as a placeholder: "
               f"{', '.join(sorted(warn))}")
-        print("    add them to a copy of the bank's dsdict yaml, or respell them "
-              "in \\lyricmode.")
+        print("    respell them in \\lyricmode, or add them to a copy of the "
+              "bank's dsdict yaml.")
 
     peak = float(np.max(np.abs(track))) or 1.0
     if peak > 1.0:
