@@ -112,9 +112,33 @@ python3 scripts/sing.py score.ly --voice ~/voices/mybank -o out/
 python3 scripts/render.py score.ly --vocal out/score-vocal.wav --vocal-gain -1
 ```
 
-Useful flags: `--line 2` (sing the second verse), `--steps 40` (slower, smoother
-— 8 to 20 is enough to audition), `--no-vibrato`, `--variance E,B,V,T`, and
-`--vocoder` when the vocoder lives outside the bank.
+Useful flags:
+
+| flag | what it does |
+|---|---|
+| `--inspect` | print everything the bank declares -- configs, tables, every model's ONNX interface -- and stop. The first thing to run on an unfamiliar bank. |
+| `--line 2` | sing the second verse |
+| `--steps 40` | diffusion steps; 8 to 20 is enough to audition, 20-40 for a take |
+| `--depth 0.6` | shallow diffusion depth, where the model exposes it |
+| `--voice-mode NAME` | for multi-speaker banks |
+| `--literal-timing` | ignore `dsdur`; split syllables with the built-in constants |
+| `--literal-pitch` | ignore `dspitch`; follow the written notes with synthetic portamento and vibrato. **Use this for a score video.** |
+| `--expressiveness 0.5` | how far `dspitch` may depart from the written notes, 0 to 1 |
+| `--variance E,B,V,T` | offsets in dB on the variance curves (0 is unity, -96 silence) |
+| `--no-vibrato` | flat held notes on the fallback pitch path |
+| `--vocoder` | when the vocoder lives outside the bank |
+
+A run prints which models it used:
+
+```
+  voice   Voice Library: 68 phonemes, 10075 dictionary entries, 44100 Hz
+  modes   tiger_fresh, tiger_disco, ...  -> singing as tiger_fresh
+  models  acoustic + vocoder, plus dsdur, dspitch
+```
+
+If a model is present and was not used, it says so and says what was used
+instead. That line is worth reading: everything else about a degraded render
+sounds plausible.
 
 `sing.py` accepts either the `.ly` (it runs the extraction for you) or an
 existing `score-vocals.json`, which is the faster loop when you are only
@@ -151,8 +175,22 @@ inference are wasted computation and tend to destabilise the model.
 
 ## 5. How the pitch curve is built
 
-A flat f0 per note is the single loudest tell of synthetic singing, so three
-things are layered onto the note pitches:
+Two ways, depending on what the bank has.
+
+**With a `dspitch` model** (the default where one exists) the written pitch line
+is handed to the model as a per-frame curve and the model returns its own
+version of it: the scoop into a phrase, the drift on a held note, the vibrato
+that singer actually uses. It is a deviation *around* the notes, not a melody —
+`--expressiveness 0` reproduces the written line to a fraction of a cent, and
+1.0, the default, departs from it by a median of about 20 cents.
+
+One detail matters and is not obvious: **inside a rest the model's output is not
+a pitch at all.** TIGER returns about MIDI -2, roughly 4 Hz. Those frames are
+replaced with the written line and eased back over a few frames, so the vocoder
+never sees the step.
+
+**Without one**, or under `--literal-pitch`, three things are layered onto the
+note pitches by hand:
 
 - **Portamento** across every change of note, 40 ms for a step and up to 110 ms
   for a wide leap, on a smoothstep rather than a line.
@@ -162,6 +200,13 @@ things are layered onto the note pitches:
   not mathematically level.
 
 All three are seeded and deterministic — the same score renders the same take.
+That, and the fact that they never scoop, is why this path is the right one for
+a score-following video even when the bank has something better.
+
+**Tempo changes are followed.** Note times come from the score's whole tempo
+map rather than one number, so a staged `rit.` written as several `\tempo`
+marks places the sung line the same way LilyPond's own MIDI does. A single
+tempo would put every note before the first change at the wrong time.
 
 ## 6. Writing lyrics that sing well
 
@@ -183,27 +228,62 @@ All three are seeded and deterministic — the same score renders the same take.
 
 ## 7. What is and is not modelled
 
-The bank ships more than the acoustic model, and the pipeline should use all of
-it. Current state:
+The bank ships more than the acoustic model, and the pipeline uses all of it.
 
 | Model | Used | Notes |
 |---|---|---|
 | acoustic | yes | verified against TIGER v102 |
 | vocoder | yes | verified by analysis-resynthesis, 0.944 mel correlation |
 | phonemizer plugin | yes | see `scripts/phonemizer.py` |
-| `dsdur` | **not yet** | phoneme durations within a note; would replace the `CONSONANT_S` table |
-| `dspitch` | **not yet** | expressive f0 around the written notes; would replace `f0_curve()` |
-| `dsvariance` | n/a for TIGER | this bank sets `use_energy_embed: false` and ships no `dsvariance/` |
+| `dsdur` | yes | phoneme durations within a note; replaces the `CONSONANT_S` table |
+| `dspitch` | yes | expressive f0 around the written notes; replaces `f0_curve()` |
+| `dsvariance` | yes, where a bank has one | TIGER does not: it sets `use_energy_embed: false` and ships no `dsvariance/` |
+
+Each is optional, each falls back to the built-in approximation, and the run
+prints which ones it actually used. `--literal-timing` and `--literal-pitch`
+force the fallbacks.
 
 An earlier version of this document argued the duration and pitch predictors
 were unnecessary because the score states durations and pitches. That was
-wrong. `dsdur` predicts *phoneme* durations inside each note -- how a syllable
-splits between consonant and vowel -- which the score says nothing about, and
-`dspitch` renders the singer's deviation around notes it is given rather than
-guessing a melody. Both are better than the hand-written approximations here.
+wrong, and it is worth restating why, because it is the whole reason they are
+worth calling. `dsdur` predicts *phoneme* durations inside each note -- how a
+syllable splits between consonant and vowel -- which the score says nothing
+about. `dspitch` renders the singer's deviation around notes it is given, not a
+melody of its own. Neither is being asked to guess something the score already
+knows.
 
-Their interfaces are known (read them with `sing.py --inspect`); wiring them is
-the next piece of work.
+### What the models are told, and what they are left to decide
+
+The division is deliberate and it is where the timing correctness lives:
+
+- `dsdur` is given each syllable's phonemes and **the length the score gives
+  that syllable**, and returns only the split inside it. The vowel still starts
+  exactly on the note's onset -- measured across `ensemble-voice.ly`, all 18
+  vowels start on a written onset to the microsecond, with the model on and
+  off. What changes is the consonants: a mean of about 100 ms and a spread that
+  depends on the phone and its context, instead of the table's flat 40-90 ms.
+- `dspitch` is given the note sequence and the written pitch line, and returns
+  a deviation around it. Measured with `librosa.yin` on a TIGER render, note
+  bodies sit a median 4.3 cents from the written pitch with the model (max
+  10.7) against 1.1 cents without it. That 4 cents is the singer; the scoops
+  between notes are larger and are the audible part.
+
+### Two things worth knowing before turning them on
+
+**Long notes are outside `dsdur`'s experience.** Asked to divide a 5.7-second
+word, TIGER returns 3.2 seconds of `f` for "flame". Its consonant predictions
+are stable up to about a second and a half and diverge past that, so the model
+is asked about a syllable of ordinary length and the surplus is left to the
+vowel, which is where a held note's time actually goes. The measurements behind
+that bound are in `scripts/predictors.py`.
+
+**`dspitch` and the playhead video disagree.** A model that scoops into a note
+is doing what a singer does, and it visibly does not match a playhead drawn on
+exact printed onsets. For a score video, render the vocal with
+`--literal-pitch`.
+
+`sing.py --inspect` prints every model's ONNX interface, including the
+predictor folders, which is the way to check what a new bank actually declares.
 
 ## 8. Troubleshooting
 
@@ -225,6 +305,21 @@ default.
 and the phonemes are spread evenly, which sounds like a mispronunciation rather
 than a crash. Re-hyphenate the word in `\lyricmode` to match the dictionary's
 vowel count.
+
+**A word comes out wrong and you want to know why before re-rendering.** Ask
+the bank directly:
+
+```bash
+python3 scripts/phonemizer.py ~/voices/tiger lanterns drift quasimodal
+#   lanterns    l ae n t er n z            dictionary
+#   drift       dr ih f t                  dictionary
+#   quasimodal  k w aa s ah m ow dx ah l   G2P (a guess)
+```
+
+Anything marked as a guess came from the plugin's neural grapheme-to-phoneme
+model rather than its 133,000-word dictionary, and that is where mispronounced
+words come from. The fix is to respell the word in `\lyricmode`, and the vowel
+count is what the hyphenation has to match.
 
 **Everything is a semitone off / notes in the wrong octave.** Check the score's
 `\transposition` — the extractor reports sounding pitch, and a transposing

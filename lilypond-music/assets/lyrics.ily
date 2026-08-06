@@ -8,7 +8,7 @@
 %%
 %%     @STAFF 0                staff 0 exists (context creation order)
 %%     @VOICE 0 singer         voice "singer" lives in staff 0
-%%     @META 0 4/4 63          staff 0: metre and tempo in quarters per minute
+%%     @META 0 0.0 4/4 63      staff 0: moment, metre, tempo in quarters/minute
 %%     @TEMPO 0.0 63           tempo change: moment, quarters per minute
 %%     @KEY  0 -2              staff 0: key signature, sharps (negative = flats)
 %%     @NOTE singer 6.5 .25 74 a note: voice, moment, duration, MIDI pitch
@@ -100,8 +100,13 @@
        ((time-signature-event engraver event)
         (let* ((ctx (ly:translator-context engraver))
                (frac (ly:context-property ctx 'timeSignatureFraction '(4 . 4))))
-          (format (current-error-port) "@META ~a ~a/~a ~a~%"
+          ;; The moment is part of the report because a metre change mid-score
+          ;; is not a correction to the opening metre, it is a second one: bar
+          ;; lengths from here on differ, and a consumer that keeps only the
+          ;; last @META bars the music wrongly from the change onwards.
+          (format (current-error-port) "@META ~a ~a ~a/~a ~a~%"
                   (lilymusic-staff-idx ctx)
+                  (lilymusic-now ctx)
                   (if (pair? frac) (car frac) 4)
                   (if (pair? frac) (cdr frac) 4)
                   (lilymusic-tempo ctx))))

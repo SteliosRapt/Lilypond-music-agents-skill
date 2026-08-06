@@ -81,7 +81,7 @@ def parse(stream):
     """Turn the @-lines into note lists per voice and syllable lists per line."""
     notes, ties, syls, hyphens, extenders = {}, {}, {}, {}, {}
     line_voice, voice_staff, meta = {}, {}, {}
-    tempo = 0.0
+    metres, tempos = {}, []
 
     for raw in stream.splitlines():
         raw = raw.strip()
@@ -119,25 +119,62 @@ def parse(stream):
                 idx, when = rest.split()
                 extenders.setdefault(int(idx), set()).add(float(when))
             elif tag == "META":
-                idx, sig, qpm = rest.split()
+                idx, when, sig, qpm = rest.split()
                 num, den = sig.split("/")
-                meta.setdefault(int(idx), {}).update(
-                    {"beats": int(num), "beat_type": int(den)})
+                staff = int(idx)
+                metres.setdefault(staff, []).append(
+                    (float(when), int(num), int(den)))
+                meta.setdefault(staff, {}).setdefault("beats", int(num))
+                meta[staff].setdefault("beat_type", int(den))
                 if float(qpm) > 0:
-                    tempo = tempo or float(qpm)
+                    # Priority 0: a metre change only reports the tempo in
+                    # force as it passes, and `\time` written before `\tempo`
+                    # at the same moment reports the tempo it is about to
+                    # replace. A real @TEMPO at the same moment must win.
+                    tempos.append((float(when), 0, float(qpm)))
             elif tag == "KEY":
                 idx, fifths = rest.split()
                 meta.setdefault(int(idx), {})["fifths"] = int(fifths)
             elif tag == "TEMPO":
-                tempo = float(rest.split()[1])
+                when, qpm = rest.split()[:2]
+                tempos.append((float(when), 1, float(qpm)))
         except (ValueError, IndexError):
             continue
 
     for v in notes:
         notes[v].sort(key=lambda n: n["when"])
+    for s in metres:
+        metres[s] = sorted(set(metres[s]))
     return dict(notes=notes, ties=ties, syls=syls, hyphens=hyphens,
                 extenders=extenders, line_voice=line_voice,
-                voice_staff=voice_staff, meta=meta, tempo=tempo or 60.0)
+                voice_staff=voice_staff, meta=meta, metres=metres,
+                tempo_map=tempo_map(tempos))
+
+
+def tempo_map(events):
+    """[(moment, quarters per minute), ...], deduplicated, always starting at 0.
+
+    A score with a `rit.` written as staged `\\tempo` marks changes speed
+    several times, and a single number cannot describe it. Reporting the whole
+    map is what lets everything downstream place a note in seconds the way
+    LilyPond's own MIDI does, rather than by multiplying by one tempo and
+    drifting from the moment of the first change.
+    """
+    out = []
+    for when, _priority, qpm in sorted(events):
+        if qpm <= 0:
+            continue
+        if out and abs(out[-1][1] - qpm) < 1e-9:
+            continue
+        if out and abs(out[-1][0] - when) < 1e-9:
+            out[-1] = (when, qpm)
+            continue
+        out.append((when, qpm))
+    if not out:
+        return [(0.0, 60.0)]
+    if out[0][0] > 0:
+        out.insert(0, (0.0, out[0][1]))
+    return [[w, q] for w, q in out]
 
 
 # ------------------------------------------------------------------ assembly
@@ -247,17 +284,44 @@ def add_note(measure, dur, pitch=None, fifths=0, syllable=None, syllabic=None,
     return n
 
 
-def musicxml(notes, meta, tempo, part_name):
+def write_tempo(measure, qpm):
+    """A metronome direction, printed and sounding, at the head of a measure."""
+    direction = sub(measure, "direction", placement="above")
+    dtype = sub(direction, "direction-type")
+    metronome = ET.SubElement(dtype, "metronome")
+    sub(metronome, "beat-unit", "quarter")
+    sub(metronome, "per-minute", int(round(qpm)))
+    sub(direction, "sound", tempo=int(round(qpm)))
+
+
+def musicxml(notes, meta, tempo_map, part_name, metres=()):
     """Build a one-part MusicXML score from an assembled vocal line.
 
     Melismata are written as slurs, which is how Sinsy and everything descended
     from it recognise "hold the vowel across these notes" -- the note simply
     carrying no <lyric> is not enough for some importers.
+
+    `metres` and `tempo_map` are lists of changes, not single values. A score
+    that changes metre mid-piece has bars of two lengths, and barring the whole
+    file at the opening metre puts every measure after the change in the wrong
+    place -- silently, since the note durations stay right and only the
+    barlines lie.
     """
-    beats = meta.get("beats", 4)
-    beat_type = meta.get("beat_type", 4)
+    changes = sorted(set((Fraction(w).limit_denominator(3360), n, d)
+                         for w, n, d in metres)) or [
+        (Fraction(0), meta.get("beats", 4), meta.get("beat_type", 4))]
+    if changes[0][0] > 0:
+        changes.insert(0, (Fraction(0), changes[0][1], changes[0][2]))
+    tempo_map = [(Fraction(w).limit_denominator(3360), q) for w, q in tempo_map] \
+        or [(Fraction(0), 60.0)]
     fifths = meta.get("fifths", 0)
-    bar = Fraction(beats, beat_type)
+
+    def metre_at(moment):
+        cur = changes[0]
+        for c in changes:
+            if c[0] <= moment:
+                cur = c
+        return cur[1], cur[2]
 
     root = ET.Element("score-partwise", {"version": "3.1"})
     plist = sub(root, "part-list")
@@ -265,12 +329,11 @@ def musicxml(notes, meta, tempo, part_name):
     sub(sp, "part-name", part_name)
     part = ET.SubElement(root, "part", {"id": "P1"})
 
-    # A pickup is a first bar that is short: LilyPond's first onset is not 0.
-    first = Fraction(notes[0]["when"]).limit_denominator(3360) if notes else Fraction(0)
-    measure_start = Fraction(0)
+    beats, beat_type = metre_at(Fraction(0))
+    bar = Fraction(beats, beat_type)
     number = 1
-    if first > 0 and first % bar != 0:
-        pass  # music starts inside the first bar; rests below fill it
+    remaining_changes = [c for c in changes if c[0] > 0]
+    remaining_tempos = list(tempo_map[1:])
 
     measure = ET.SubElement(part, "measure", {"number": str(number)})
     attrs = sub(measure, "attributes")
@@ -283,12 +346,7 @@ def musicxml(notes, meta, tempo, part_name):
     clef = sub(attrs, "clef")
     sub(clef, "sign", "G")
     sub(clef, "line", 2)
-    direction = sub(measure, "direction", placement="above")
-    dtype = sub(direction, "direction-type")
-    ET.SubElement(dtype, "metronome")
-    sub(dtype.find("metronome"), "beat-unit", "quarter")
-    sub(dtype.find("metronome"), "per-minute", int(round(tempo)))
-    sub(direction, "sound", tempo=int(round(tempo)))
+    write_tempo(measure, tempo_map[0][1])
 
     cursor = Fraction(0)
 
@@ -307,6 +365,8 @@ def musicxml(notes, meta, tempo, part_name):
         else:
             i += 1
 
+    bar_start = Fraction(0)
+
     def ensure_measure():
         """Open a new measure if the cursor has reached a barline.
 
@@ -314,18 +374,35 @@ def musicxml(notes, meta, tempo, part_name):
         keeps a bar filled exactly by one whole note from opening an empty bar
         after it -- and, the other way round, stops the note after such a bar
         from being appended to a measure that is already full.
+
+        Barlines are tracked from the last one rather than by `cursor % bar`,
+        because after a metre change the two stop agreeing: a 3/4 bar following
+        four 4/4 bars starts at 4, and 4 is not a multiple of 3/4.
         """
-        nonlocal measure, number
-        if cursor > 0 and cursor % bar == 0 and measure.find("note") is not None:
-            number += 1
-            measure = ET.SubElement(part, "measure", {"number": str(number)})
+        nonlocal measure, number, bar, beats, beat_type, bar_start
+        if cursor <= bar_start or cursor - bar_start < bar:
+            return
+        if measure.find("note") is None:
+            return
+        bar_start += bar
+        number += 1
+        measure = ET.SubElement(part, "measure", {"number": str(number)})
+        while remaining_changes and remaining_changes[0][0] <= bar_start:
+            _at, beats, beat_type = remaining_changes.pop(0)
+            bar = Fraction(beats, beat_type)
+            attrs = sub(measure, "attributes")
+            time = sub(attrs, "time")
+            sub(time, "beats", beats)
+            sub(time, "beat-type", beat_type)
+        while remaining_tempos and remaining_tempos[0][0] <= bar_start:
+            write_tempo(measure, remaining_tempos.pop(0)[1])
 
     def fill_to(target):
         """Emit rests, splitting at every barline, until the cursor reaches target."""
         nonlocal cursor
         while cursor < target:
             ensure_measure()
-            end = min(target, (cursor // bar + 1) * bar)
+            end = min(target, bar_start + bar)
             add_note(measure, float(end - cursor), fifths=fifths)
             cursor = end
 
@@ -341,8 +418,8 @@ def musicxml(notes, meta, tempo, part_name):
         cursor = when + dur
 
     # Pad the final bar so importers do not see a truncated measure.
-    if cursor % bar:
-        fill_to((cursor // bar + 1) * bar)
+    if bar_start < cursor < bar_start + bar:
+        fill_to(bar_start + bar)
 
     ET.indent(root, space="  ")
     return ET.ElementTree(root)
@@ -372,7 +449,11 @@ def main():
                  '  \\new Staff \\new Voice = "singer" \\voicePart\n'
                  '  \\new Lyrics \\lyricsto "singer" \\voiceWords')
 
-    doc = {"score": str(score), "tempo": data["tempo"], "lines": []}
+    # `tempo` stays for anything that only wants one number; `tempo_map` is
+    # the truth, and it is what sing.py places notes with.
+    tempo_map = data["tempo_map"]
+    doc = {"score": str(score), "tempo": tempo_map[0][1],
+           "tempo_map": tempo_map, "lines": []}
     written = []
     for line in sorted(data["line_voice"]):
         voice, notes = assemble(data, line)
@@ -381,7 +462,9 @@ def main():
         meta = data["meta"].get(data["voice_staff"].get(voice, -1), {})
         name = f"{stem}-{voice or 'voice'}-{line + 1}"
         path = outdir / f"{name}.musicxml"
-        musicxml(notes, meta, data["tempo"], voice or "Voice").write(
+        staff = data["voice_staff"].get(voice, -1)
+        musicxml(notes, meta, tempo_map, voice or "Voice",
+                 data["metres"].get(staff, [])).write(
             path, encoding="UTF-8", xml_declaration=True)
         written.append(path)
 
@@ -389,8 +472,8 @@ def main():
         words = len({n.get("word") for n in notes if n.get("word")})
         text = " ".join(n["syllable"] for n in notes if n["syllable"])
         doc["lines"].append({
-            "line": line + 1, "voice": voice,
-            "staff": data["voice_staff"].get(voice, -1),
+            "line": line + 1, "voice": voice, "staff": staff,
+            "metres": data["metres"].get(staff, []),
             "musicxml": path.name, "notes": notes})
         print(f"  line {line + 1}  voice {voice!r}  staff "
               f"{data['voice_staff'].get(voice, -1)}: {len(sung)} sung notes, "

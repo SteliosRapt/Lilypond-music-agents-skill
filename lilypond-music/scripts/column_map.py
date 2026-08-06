@@ -76,20 +76,44 @@ def _affine(src, dst):
     return a, b, resid
 
 
-def system_transform(sys_cols, image_bars, tolerance=8.0):
+def system_transform(sys_cols, image_bars, tolerance=8.0, slack=3, budget=400):
     """Fit LilyPond x -> page pixel x for one system.
 
     `image_bars` is the system's measured [left, barline1, ... barlineN] in page
     pixels; the system's non-musical columns are the same boundaries in LilyPond
     units.  Returns (a, b, residual) or None if the two disagree.
+
+    The two lists usually have the same length, and where they do the fit is
+    over-determined and the residual says whether to believe it.  They do not
+    always: a breakable column can exist where no barline is *printed* -- a
+    lyric extender ending mid-bar is enough -- and the lead-sheet template has
+    one, which used to cost that system its note-level anchors entirely.  So a
+    surplus of up to `slack` boundaries is resolved by taking the subset that
+    fits best, with the system's own edges always kept.  A wrong choice does not
+    slip through quietly: it shows up as a residual far above `tolerance`, and
+    the run falls back to one sweep per bar for that system.
     """
     bounds = sorted({(c["moment"], c["x"]) for c in sys_cols if not c["musical"]})
-    if len(bounds) != len(image_bars):
+    xs = [x for _, x in bounds]
+    target = list(image_bars)
+    if len(xs) == len(target):
+        fit = _affine(xs, target)
+        return fit if fit and fit[2] <= tolerance else None
+
+    surplus = len(xs) - len(target)
+    if not 0 < surplus <= slack or len(target) < 2:
         return None
-    fit = _affine([x for _, x in bounds], list(image_bars))
-    if fit is None or fit[2] > tolerance:
+    from itertools import combinations
+    from math import comb
+    inner, need = len(xs) - 2, len(target) - 2
+    if need < 0 or comb(inner, need) > budget:
         return None
-    return fit
+    best = None
+    for pick in combinations(range(1, len(xs) - 1), need):
+        fit = _affine([xs[0]] + [xs[i] for i in pick] + [xs[-1]], target)
+        if fit and (best is None or fit[2] < best[2]):
+            best = fit
+    return best if best and best[2] <= tolerance else None
 
 
 def note_anchors(cols, pages, bars, moment_to_sec, tolerance=8.0):

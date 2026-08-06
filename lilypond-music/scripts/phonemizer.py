@@ -76,9 +76,13 @@ class Phonemizer:
         names = {Path(n).name: n for n in z.namelist()}
         if "dict.txt" not in names:
             raise ValueError(f"plugin archive has no dict.txt (found {list(names)})")
+        phones, types = ([], {})
+        if "phones.txt" in names:
+            phones, types = cls._parse_phones(
+                z.read(names["phones.txt"]).decode("utf-8", "replace"))
         obj = cls(cls._parse_dict(z.read(names["dict.txt"]).decode("utf-8", "replace")),
-                  *cls._parse_phones(z.read(names["phones.txt"]).decode("utf-8", "replace"))
-                  if "phones.txt" in names else ([], {}))
+                  phones)
+        obj.types = types
         obj._model = z.read(names["g2p.onnx"]) if "g2p.onnx" in names else None
         return obj
 
@@ -92,9 +96,6 @@ class Phonemizer:
         model = folder / "g2p.onnx"
         obj._model = model.read_bytes() if model.exists() else None
         return obj
-
-    def __init_subclass__(cls, **kw):  # pragma: no cover
-        super().__init_subclass__(**kw)
 
     @staticmethod
     def _parse_dict(text):
@@ -165,6 +166,33 @@ class Phonemizer:
         return out or None
 
 
+def _main():
+    """Phonemise words from the command line.
+
+        python3 scripts/phonemizer.py ~/voices/tiger lanterns drift silence
+
+    The fastest way to answer "how will the bank say this word", which is the
+    question behind most unintelligible lines. Each word is marked with where
+    its pronunciation came from -- the plugin's dictionary, or its neural G2P,
+    which is a guess and is where to look first when a word comes out wrong.
+    """
+    import sys
+    if len(sys.argv) < 3:
+        sys.exit("usage: phonemizer.py <bank-or-plugin-path> WORD [WORD ...]")
+    where = sys.argv[1]
+    path = find_plugin(where) or where
+    ph = Phonemizer.from_plugin(path)
+    print(f"plugin: {path}")
+    print(f"{len(ph.entries)} dictionary entries, {len(ph.phones)} phones, "
+          f"neural G2P {'present' if ph._model else 'absent'}\n")
+    for word in sys.argv[2:]:
+        key = word.lower()
+        known = key in ph.entries
+        out = ph(key)
+        source = "dictionary" if known else "G2P (a guess)" if out else "nothing"
+        print(f"  {word:<16} {' '.join(out) if out else '-':<28} {source}")
+
+
 def find_plugin(bank_dir):
     """Look for a phonemizer plugin shipped alongside a bank.
 
@@ -179,3 +207,7 @@ def find_plugin(bank_dir):
         if dlls:
             return dlls[0]
     return None
+
+
+if __name__ == "__main__":
+    _main()

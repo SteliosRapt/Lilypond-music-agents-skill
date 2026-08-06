@@ -35,10 +35,11 @@ Useful flags: `--size 1920x1080` (landscape; default is 1080x1920 portrait),
 `--playhead-mode bars` (one linear sweep per bar instead of per-note anchors),
 `--list-tracks` then `--mix "koto=-3,voice=+4/-0.2"` (per-part gain in dB and
 stereo balance -- the fix for a score that is notated right but sounds
-unbalanced),
+unbalanced) and `--eq "koto=warm,drums=hp:120,pad=distant"` (per-part tone -- the
+fix for parts that are balanced and still fight each other),
 `--verify 8` (sample 8 frames to confirm sync), `--keep-temp` (inspect
 intermediates in `out/.<stem>-work/`), `--vocal out/score-vocal.wav` (mix in a
-sung line, with `--vocal-gain`).
+sung line, with `--vocal-gain` and `--vocal-eq`).
 
 Start from a template in `assets/templates/` rather than a blank file:
 `solo-piano.ly`, `ensemble-voice.ly` (voice + lyrics + winds + strings + koto +
@@ -70,6 +71,13 @@ drums + piano + drone), `lead-sheet.ly` (melody, chord symbols, lyrics).
    `--mix`, not by rewriting dynamics in the score -- a `\mp` koto and a `\mp`
    shakuhachi are the same velocity and about 8 dB apart, which is a property of
    the soundfont, not of the music.
+8. **Then correct the tone, if levels were not enough.** A part that is loud
+   enough and still inaudible is masked, not quiet, and `--eq` is the fix:
+   `--eq "koto=clear"` takes 2 dB out of the mud band on the part that is
+   covering the melody. `references/audio-and-midi.md` section 10 is the whole
+   equaliser: the preset table with measured numbers, what to reach for by
+   symptom, and the traps (chief among them that the master low-pass runs
+   *after* your EQ, so boosting 11 kHz does nothing).
 
 ## Singing the words
 
@@ -94,6 +102,13 @@ banks are almost all non-commercial and several forbid redistribution. Read the
 bank's terms. `references/singing-synthesis.md` covers what a bank has to
 contain, what the pipeline models and what it does not, and how to write lyrics
 that come out intelligible.
+
+A bank usually ships more than the acoustic model, and all of it is used: a
+`dsdur` model decides how each syllable's time divides between its consonants
+and its vowel, and a `dspitch` model supplies that singer's own deviation
+around the written notes. Every run prints which models it used. **For a score
+video, add `--literal-pitch`** -- a model that scoops into a note is doing what
+a singer does, and it visibly disagrees with a playhead drawn on exact onsets.
 
 Two things are worth knowing before writing the vocal part:
 
@@ -220,7 +235,9 @@ glance at a thumbnail.
   polyphony, cross-staff writing, and layout control.
 - `references/audio-and-midi.md` -- MIDI instrument assignment, the full General
   MIDI name list, drum note names, channel mapping, dynamics-to-velocity,
-  `articulate.ly`, soundfonts, and the ffmpeg mastering chain.
+  `articulate.ly`, soundfonts, the ffmpeg mastering chain, balancing parts, and
+  the equaliser (section 10: presets with measured curves, symptom-to-fix,
+  frequency map, and the traps).
 - `references/video-pipeline.md` -- how `render.py` builds the animation, the
   colour-coded layout analysis, deriving the timeline from MIDI, the ffmpeg
   pitfalls, and how to extend it (scrolling, note-level highlighting, karaoke).
@@ -245,5 +262,18 @@ glance at a thumbnail.
   verse.
 - `scripts/sing.py` -- renders those with a DiffSinger voicebank through
   onnxruntime, or with the built-in preview voice (`--preview`).
+  `--inspect` prints everything a bank declares, which is where to start with an
+  unfamiliar one.
+- `scripts/predictors.py` -- the bank's optional `dsdur`, `dspitch` and
+  `dsvariance` models: what each tensor means, how that was established, and
+  the bounds placed on them.
 - `scripts/preview_voice.py` -- the preview voice: letter-to-sound rules and a
   three-formant synthesiser, for auditioning a line without a voicebank.
+- `scripts/phonemizer.py` -- reads the bank's own OpenUtau phonemizer plugin
+  (dictionary plus neural G2P) without OpenUtau. Run it directly
+  (`python3 scripts/phonemizer.py ~/voices/mybank lanterns drift`) to see how a
+  bank will pronounce a word, and whether that pronunciation is a guess.
+- `scripts/dev/selftest.py` -- runs the whole pipeline against a score written
+  to break it and checks 50-odd invariants. Run it after changing any of the
+  above; `--video` includes playhead verification, `--voice` uses a real bank
+  instead of a stub.

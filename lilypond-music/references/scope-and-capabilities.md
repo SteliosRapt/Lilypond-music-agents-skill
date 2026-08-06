@@ -188,8 +188,11 @@ LilyPond's MIDI output is a literal reading of the score:
   improves matters -- it realises ornaments, shortens staccato notes, applies
   ritardandi -- at the cost of slightly altering the played rhythms.
 
-Anything beyond that belongs to the synthesis stage: choice of soundfont,
-reverb, EQ, per-track rendering and mixing. See `audio-and-midi.md`.
+Anything beyond that belongs to the synthesis stage, and `render.py` covers the
+practical part of it: hairpins over held notes performed as CC11 expression,
+per-part gain and stereo balance (`--mix`), per-part and master equalisation
+(`--eq`, `--master-eq`), reverb, band limits and levelling. See
+`audio-and-midi.md`, sections 8 to 10.
 
 ## 12. Practical ceilings
 
