@@ -86,8 +86,11 @@ def engrave(score, work, resolution):
         for ily in (ANALYSIS_ILY, COLUMNS_ILY, HAIRPINS_ILY):
             fh.write(f'\\include "{os.path.abspath(ily)}"\n')
     analysis = os.path.join(work, "analysis")
+    # --loglevel=WARN for the same reason vocal_score.py uses it: the progress
+    # markers LilyPond prints while drawing ("[16]") share this stream with the
+    # column report, and one landing inside a line costs an anchor silently.
     proc = run(["lilypond", "-dno-point-and-click",
-                f"-dinclude-settings={settings}",
+                f"-dinclude-settings={settings}", "--loglevel=WARN",
                 "--formats=png", f"-dresolution={resolution}", "-o", analysis, score])
 
     display_pngs = pages_of(base)

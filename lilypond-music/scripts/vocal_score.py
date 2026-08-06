@@ -57,11 +57,26 @@ def instrument(score, work):
     work.mkdir(parents=True, exist_ok=True)
     proc = subprocess.run(
         ["lilypond", f"-dinclude-settings={LYRICS_ILY}", "-dno-point-and-click",
-         # Interpretation is all this needs.  Skipping the backend is not just
-         # faster: LilyPond's page-drawing progress ("[16]") is written to the
-         # same stream as the report, and lands *inside* a line often enough to
-         # matter.  The parser below tolerates that anyway.
-         "-dbackend=null", "-o", str(work / "probe"), str(score)],
+         # The report shares one stream -- stderr -- with everything else
+         # LilyPond says, so anything else it says can land in the middle of a
+         # line. Two things used to, and both corrupt a part silently rather
+         # than loudly:
+         #
+         #   * progress markers. `@NOTE [16]"bass" 12.5 0.25 58` files that
+         #     note under a voice nothing else uses, which is to say it deletes
+         #     it, and a part one note short sings every syllable after it one
+         #     note early. `--loglevel=WARN` stops them and keeps every warning.
+         #   * `-dbackend=null`, which used to be passed here for speed, makes
+         #     LilyPond fail at book output on *every* score -- exit 1 and a
+         #     Guile backtrace, harmless in itself because the interpretation
+         #     has already been reported by then, except that the backtrace is
+         #     printed into this stream too. It landed inside a syllable on a
+         #     four-part score and turned `"ter"` into a fragment of init.ly.
+         #
+         # Drawing the page instead costs a quarter of a second on a 28-bar
+         # score and the stream comes back with nothing in it but the report.
+         "--loglevel=WARN",
+         "-o", str(work / "probe"), str(score)],
         capture_output=True, text=True)
     if proc.returncode != 0 and "@NOTE" not in proc.stderr:
         sys.exit(f"lilypond failed:\n{proc.stderr[-2000:]}")
@@ -69,6 +84,7 @@ def instrument(score, work):
 
 
 TOKEN = re.compile(r'^@(\w+)\s+(.*)$')
+PROGRESS = re.compile(r'\[\d+\]')
 QUOTED = re.compile(r'"((?:[^"\\]|\\.)*)"')
 
 
@@ -84,7 +100,11 @@ def parse(stream):
     metres, tempos = {}, []
 
     for raw in stream.splitlines():
-        raw = raw.strip()
+        # Belt and braces against the progress markers `--loglevel=WARN` is
+        # there to prevent: a `[16]` sitting between a tag and its voice name
+        # is not a parse error, it is a note filed under a voice that does not
+        # exist. A syllable that genuinely reads "[16]" is not a thing.
+        raw = PROGRESS.sub("", raw).strip()
         m = TOKEN.match(raw)
         if not m:
             continue
