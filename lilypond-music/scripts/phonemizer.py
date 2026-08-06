@@ -76,9 +76,13 @@ class Phonemizer:
         names = {Path(n).name: n for n in z.namelist()}
         if "dict.txt" not in names:
             raise ValueError(f"plugin archive has no dict.txt (found {list(names)})")
+        phones, types = ([], {})
+        if "phones.txt" in names:
+            phones, types = cls._parse_phones(
+                z.read(names["phones.txt"]).decode("utf-8", "replace"))
         obj = cls(cls._parse_dict(z.read(names["dict.txt"]).decode("utf-8", "replace")),
-                  *cls._parse_phones(z.read(names["phones.txt"]).decode("utf-8", "replace"))
-                  if "phones.txt" in names else ([], {}))
+                  phones)
+        obj.types = types
         obj._model = z.read(names["g2p.onnx"]) if "g2p.onnx" in names else None
         return obj
 
@@ -92,9 +96,6 @@ class Phonemizer:
         model = folder / "g2p.onnx"
         obj._model = model.read_bytes() if model.exists() else None
         return obj
-
-    def __init_subclass__(cls, **kw):  # pragma: no cover
-        super().__init_subclass__(**kw)
 
     @staticmethod
     def _parse_dict(text):

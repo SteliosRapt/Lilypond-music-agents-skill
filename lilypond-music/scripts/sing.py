@@ -26,20 +26,34 @@ script deliberately does not bundle or download one.
 
 WHAT THIS DOES AND DOES NOT MODEL
 ---------------------------------
-It runs the two models every bank ships -- the acoustic model and the vocoder
--- and supplies phoneme durations and the pitch curve itself, rather than
-calling the optional `dsdur`/`dspitch`/`dsvariance` predictors that only some
-banks include. That is the deliberate trade. Written durations and written
-pitch are exactly what a score already specifies, and a predictor asked to
-guess them from the notes would be guessing at something we know. What is lost
-is the learned *deviation*: the human tendency to scoop into a note, to shorten
-an unstressed vowel, to breathe. Some of that is put back synthetically here
-(portamento, vibrato on held notes, breaths in the rests); the rest is the
-honest difference between this and a bank driven from OpenUtau by hand.
+Every model the bank ships is used. The acoustic model and the vocoder are the
+two every bank has; beside them a bank may carry up to three predictors, and
+each one replaces something this script would otherwise have to invent:
 
-If the bank's acoustic model demands variance inputs (energy, breathiness,
-voicing, tension) they are supplied flat, which sounds slightly more even than
-the same bank in OpenUtau. `--variance` overrides the levels.
+    dsdur       how a syllable's time divides between its consonants and its
+                vowel -- something a score says nothing about. Without it, a
+                table of constants (CONSONANT_S below).
+    dspitch     that singer's expressive deviation *around* the written notes:
+                the scoop into a phrase, the drift on a held note. Without it,
+                synthetic portamento and vibrato in f0_curve().
+    dsvariance  energy, breathiness, voicing and tension curves, where the
+                acoustic model asks for them. Without it, flat inputs.
+
+The score keeps the decisions the score should keep. `dsdur` is told how long
+each syllable lasts and only divides that time up; `dspitch` is told the notes
+and only deviates around them. What is being borrowed is the singer's habits,
+not their opinion about the tune.
+
+Each is optional. A bank with none of them still renders -- most banks ship one
+or two -- and the run prints which models it actually used, because a render
+that quietly sounds worse because a folder was missing is the failure worth
+guarding against. `--literal-timing` and `--literal-pitch` force the built-in
+fallbacks; `--literal-pitch` in particular is what a score-following video
+wants, since a model that scoops hard into a note visibly disagrees with a
+playhead drawn on exact onsets.
+
+See scripts/predictors.py for what the predictors' tensors mean and how that
+was established.
 """
 
 import argparse
@@ -91,7 +105,8 @@ def load_yaml(path):
 class Voice:
     """A DiffSinger bank: config, phoneme table, dictionary, ONNX sessions."""
 
-    def __init__(self, path, vocoder=None, plugin=None):
+    def __init__(self, path, vocoder=None, plugin=None, voice_mode=None,
+                 use_predictors=("duration", "pitch", "variance")):
         try:
             import onnxruntime
         except ImportError:
@@ -127,6 +142,15 @@ class Voice:
 
         vdir = Path(vocoder).expanduser().resolve() if vocoder else self._find_vocoder()
         self.vocoder_cfg, self.vocoder = self._load_vocoder(vdir, onnxruntime, opts)
+
+        # The optional models: whichever of dsdur/dspitch/dsvariance this bank
+        # ships. A bank with none of them is the common case and is not an
+        # error, but a bank that has one and fails to load it is worth saying
+        # out loud -- a run that quietly sounds worse is the thing to avoid.
+        from predictors import load_predictors
+        self.predictors = load_predictors(self.dir, onnxruntime, opts,
+                                          voice_mode or (self.speakers or [None])[0],
+                                          use_predictors)
 
         # A vocoder trained on a different mel definition does not merely sound
         # worse, it produces noise; the numbers must match exactly.
@@ -358,12 +382,15 @@ def inspect_bank(path, vocoder=None):
     else:
         print("\n  ! no dsconfig.yaml at the top level -- is this the bank root?")
 
-    for d in sorted(bank.glob("dsdict*.yaml")):
+    # Dictionaries live wherever the bank felt like putting them: TIGER keeps
+    # none at the root and one per predictor folder. Summarise them all, and
+    # summarise rather than print -- these files run to 690 KB.
+    for d in sorted(bank.rglob("dsdict*.yaml")):
         data = load_yaml(d) or {}
         types = {}
         for s in (data.get("symbols") or []):
             types[str(s.get("type", "?"))] = types.get(str(s.get("type", "?")), 0) + 1
-        print(f"\n{d.name}: {len(data.get('entries') or [])} entries, "
+        print(f"\n{d.relative_to(bank)}: {len(data.get('entries') or [])} entries, "
               f"{len(data.get('symbols') or [])} symbols "
               f"({', '.join(f'{k} {v}' for k, v in sorted(types.items()))})")
         if data.get("replacements"):
@@ -375,40 +402,55 @@ def inspect_bank(path, vocoder=None):
         lines = [l for l in ph.read_text(encoding="utf-8").splitlines() if l.strip()]
         print(f"\n{ph.name}: {len(lines)} phonemes, first 12: {' '.join(lines[:12])}")
 
-    for emb in sorted(bank.glob("*.emb")):
-        print(f"  {emb.name}: {np.fromfile(emb, dtype='<f4').size} floats")
+    embeddings = sorted(bank.rglob("*.emb"))
+    for emb in embeddings:
+        print(f"  {emb.relative_to(bank)}: "
+              f"{np.fromfile(emb, dtype='<f4').size} floats")
 
     opts = onnxruntime.SessionOptions()
     opts.log_severity_level = 3
     opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_DISABLE_ALL
 
-    dirs = [bank] + [d for d in sorted(bank.iterdir()) if d.is_dir()]
-    if vocoder:
-        dirs.append(Path(vocoder).expanduser().resolve())
-    for d in dirs:
-        for sub in sorted(d.glob("*.yaml")):
-            if d != bank:
-                data = load_yaml(sub) or {}
-                print(f"\n{d.name}/{sub.name}")
-                for k in sorted(data):
-                    print(f"  {k}: {data[k]}")
-        for onnx_file in sorted(d.glob("*.onnx")):
-            rel = onnx_file.relative_to(bank) if bank in onnx_file.parents else onnx_file.name
-            mb = onnx_file.stat().st_size / 1e6
-            print(f"\n=== {rel}  ({mb:.1f} MB)")
-            try:
-                s = onnxruntime.InferenceSession(str(onnx_file), opts,
-                                                 providers=["CPUExecutionProvider"])
-            except Exception as e:
-                print(f"  ! could not load: {str(e)[:200]}")
-                continue
-            for i in s.get_inputs():
-                print(f"  IN   {i.name:<16} {i.type:<16} {i.shape}")
-            for o in s.get_outputs():
-                print(f"  OUT  {o.name:<16} {o.type:<16} {o.shape}")
+    # Every dsconfig in the tree, not just the top level: the predictors keep
+    # theirs one level down and their models one level below that (TIGER's live
+    # in dsdur/files/), so a single-level walk misses exactly the models whose
+    # interface is the reason to run --inspect at all.
+    for sub in sorted(bank.rglob("dsconfig.yaml")):
+        if sub.parent == bank:
+            continue
+        data = load_yaml(sub) or {}
+        print(f"\n{sub.relative_to(bank)}")
+        for k in sorted(data):
+            print(f"  {k}: {data[k]}")
 
-    print("\nPaste this whole output when asking for the duration, pitch and "
-          "variance models to be wired up.")
+    onnx_files = sorted(bank.rglob("*.onnx"))
+    if vocoder:
+        vdir = Path(vocoder).expanduser().resolve()
+        for sub in sorted(vdir.glob("*.yaml")):
+            data = load_yaml(sub) or {}
+            print(f"\n{vdir.name}/{sub.name}")
+            for k in sorted(data):
+                print(f"  {k}: {data[k]}")
+        onnx_files += sorted(vdir.glob("*.onnx"))
+    for onnx_file in onnx_files:
+        rel = (onnx_file.relative_to(bank) if bank in onnx_file.parents
+               else onnx_file.name)
+        mb = onnx_file.stat().st_size / 1e6
+        print(f"\n=== {rel}  ({mb:.1f} MB)")
+        try:
+            s = onnxruntime.InferenceSession(str(onnx_file), opts,
+                                             providers=["CPUExecutionProvider"])
+        except Exception as e:
+            print(f"  ! could not load: {str(e)[:200]}")
+            continue
+        for i in s.get_inputs():
+            print(f"  IN   {i.name:<16} {i.type:<16} {i.shape}")
+        for o in s.get_outputs():
+            print(f"  OUT  {o.name:<16} {o.type:<16} {o.shape}")
+
+    print("\nThis output is the specification: where it and the documentation "
+          "disagree, believe it.\nWhat the predictors' tensors mean, and how "
+          "that was established, is in scripts/predictors.py.")
 
 
 # --------------------------------------------------------------------------
@@ -467,18 +509,64 @@ def syllabify(voice, phonemes, count):
 # score to phoneme timeline
 # --------------------------------------------------------------------------
 
-def seconds(whole, tempo):
-    """Whole notes to seconds. A whole note is four quarters at `tempo` bpm."""
-    return whole * 4.0 * 60.0 / tempo
+class Clock:
+    """Score moments (in whole notes) to seconds, through a tempo map.
+
+    A single tempo cannot describe a score that changes speed, and getting this
+    wrong is invisible until it is glaring: with one number taken from the
+    piece's *last* `\\tempo`, every note before the change is placed at the
+    wrong time and the sung line drifts steadily away from the instruments.
+    The map is the same one LilyPond writes into its MIDI, so the two agree by
+    construction.
+
+    Callable, so it can stand where a bare tempo used to: `clock(moment)`.
+    """
+
+    def __init__(self, tempo_map=None, tempo=None):
+        pairs = [(float(w), float(q)) for w, q in (tempo_map or [])
+                 if float(q) > 0]
+        if not pairs:
+            pairs = [(0.0, float(tempo or 60.0))]
+        pairs.sort()
+        if pairs[0][0] > 0:
+            pairs.insert(0, (0.0, pairs[0][1]))
+        # Precompute the elapsed seconds at each change, so a lookup is local.
+        self.points, elapsed = [], 0.0
+        for i, (when, qpm) in enumerate(pairs):
+            if i:
+                prev_when, prev_qpm, prev_secs = self.points[-1]
+                elapsed = prev_secs + (when - prev_when) * 4.0 * 60.0 / prev_qpm
+            self.points.append((when, qpm, elapsed))
+        self.tempo = pairs[0][1]
+
+    def __call__(self, moment):
+        when, qpm, secs = self.points[0]
+        for point in self.points:
+            if point[0] <= moment:
+                when, qpm, secs = point
+            else:
+                break
+        return secs + (float(moment) - when) * 4.0 * 60.0 / qpm
+
+    def __repr__(self):
+        return ("Clock(" + ", ".join(f"{w:g}@{q:g}" for w, q, _s in self.points)
+                + ")")
 
 
-def phrase_split(notes, tempo, gap=0.6):
+def seconds(whole, clock):
+    """Whole notes to seconds, through a Clock (or a bare tempo in bpm)."""
+    if callable(clock):
+        return clock(whole)
+    return whole * 4.0 * 60.0 / clock
+
+
+def phrase_split(notes, clock, gap=0.6):
     """Break the line at rests long enough to breathe in."""
     phrases, current = [], []
     for n in notes:
         if current:
             prev = current[-1]
-            rest = seconds(n["when"] - (prev["when"] + prev["dur"]), tempo)
+            rest = seconds(n["when"] - (prev["when"] + prev["dur"]), clock)
             if rest > gap:
                 phrases.append(current)
                 current = []
@@ -499,10 +587,55 @@ def sung_notes(notes):
     return out
 
 
-def phonemize(voice, phrase, tempo, warn):
+def predicted_lengths(voice, groups, clock, head=0.25, tail=0.35):
+    """Ask `dsdur` how each syllable's time divides between its phonemes.
+
+    The model is given the whole phrase as a sequence of words -- the syllables
+    plus the silences between them -- because a consonant's length depends on
+    what precedes it. `word_dur` is the time the *score* gives each syllable, so
+    the model decides only the split inside it, never when the next syllable
+    starts. That division of labour is what keeps the singer on the beat while
+    still using the bank's own timing.
+
+    Returns a list parallel to `groups`, each entry a list of seconds per
+    phoneme, or None if the bank has no `dsdur` or the model declined.
+    """
+    model = getattr(voice, "predictors", None) and voice.predictors.duration
+    if model is None:
+        return None
+    sil = voice.silence()
+    words, index_of = [], {}
+    cursor = None
+    for gi, g in enumerate(groups):
+        if not g["phones"]:
+            continue
+        start = seconds(g["notes"][0]["when"], clock)
+        end = seconds(g["notes"][-1]["when"] + g["notes"][-1]["dur"], clock)
+        gap = head if cursor is None else start - cursor
+        if gap > 1e-3:
+            words.append({"phones": [sil], "seconds": gap, "midi": 0})
+        index_of[len(words)] = gi
+        words.append({"phones": list(g["phones"]), "seconds": max(end - start, 1e-3),
+                      "midi": int(g["notes"][0]["pitch"])})
+        cursor = end
+    if not words:
+        return None
+    words.append({"phones": [sil], "seconds": tail, "midi": 0})
+
+    got = model.predict(words)
+    if got is None:
+        return None
+    voice.predictors.used.add("dsdur")
+    out = [None] * len(groups)
+    for wi, gi in index_of.items():
+        out[gi] = got[wi]
+    return out
+
+
+def phonemize(voice, phrase, clock, warn):
     """Turn one phrase into [(phoneme, start_s, end_s)], vowels on the beat."""
     notes = sung_notes(phrase)
-    t0 = seconds(notes[0]["when"], tempo)
+    t0 = seconds(notes[0]["when"], clock)
 
     # Group notes by syllable: a syllable's note plus any melisma notes after it.
     groups, cur = [], None
@@ -527,7 +660,8 @@ def phonemize(voice, phrase, tempo, warn):
     if wcur:
         words.append(wcur)
 
-    timeline = []
+    # Phonemes first, for every syllable in the phrase, because `dsdur` is
+    # asked about the phrase as a whole rather than one syllable at a time.
     for word in words:
         text = word[0]["word"] or ""
         phon = lookup(voice, text) if text else None
@@ -535,45 +669,57 @@ def phonemize(voice, phrase, tempo, warn):
             warn.add(text)
             phon = [voice.symbols and next(iter(voice.symbols)) or "a"]
         parts = syllabify(voice, phon or [], len(word)) if phon else [[] for _ in word]
-
         for group, phones in zip(word, parts):
-            start = seconds(group["notes"][0]["when"], tempo)
-            end = seconds(group["notes"][-1]["when"] + group["notes"][-1]["dur"], tempo)
-            vowel_at = next((i for i, p in enumerate(phones) if voice.is_vowel(p)), None)
-            if vowel_at is None:
-                onset, rest = phones, []
-            else:
-                onset, rest = phones[:vowel_at], phones[vowel_at:]
+            group["phones"] = list(phones)
 
-            # Onset consonants sit before the beat, taking time from whatever
-            # precedes them -- the previous phoneme, or the head padding.
-            lead = sum(voice.consonant_len(p) for p in onset)
-            room = start - (timeline[-1][1] if timeline else t0 - 0.5)
-            scale = min(1.0, room / lead) if lead > 0 and room > 0 else (0 if lead else 1)
-            cursor = start - lead * scale
-            if timeline and cursor < timeline[-1][2]:
-                timeline[-1] = (timeline[-1][0], timeline[-1][1], cursor)
-            for p in onset:
-                d = max(voice.consonant_len(p) * scale, MIN_PHONEME_S)
+    lengths = predicted_lengths(voice, groups, clock)
+
+    timeline = []
+    for gi, group in enumerate(groups):
+        phones = group["phones"]
+        # Either the singer's own model, or the constants it replaces.
+        predicted = lengths[gi] if lengths else None
+        length_of = ((lambda i, p: predicted[i]) if predicted
+                     else (lambda i, p: voice.consonant_len(p)))
+        start = seconds(group["notes"][0]["when"], clock)
+        end = seconds(group["notes"][-1]["when"] + group["notes"][-1]["dur"], clock)
+        vowel_at = next((i for i, p in enumerate(phones) if voice.is_vowel(p)), None)
+        if vowel_at is None:
+            onset, rest = list(enumerate(phones)), []
+        else:
+            onset = list(enumerate(phones))[:vowel_at]
+            rest = list(enumerate(phones))[vowel_at:]
+
+        # Onset consonants sit before the beat, taking time from whatever
+        # precedes them -- the previous phoneme, or the head padding.
+        lead = sum(length_of(i, p) for i, p in onset)
+        room = start - (timeline[-1][1] if timeline else t0 - 0.5)
+        scale = min(1.0, room / lead) if lead > 0 and room > 0 else (0 if lead else 1)
+        cursor = start - lead * scale
+        if timeline and cursor < timeline[-1][2]:
+            timeline[-1] = (timeline[-1][0], timeline[-1][1], cursor)
+        for i, p in onset:
+            d = max(length_of(i, p) * scale, MIN_PHONEME_S)
+            timeline.append((p, cursor, cursor + d))
+            cursor += d
+
+        # The vowel holds the note. A final consonant cluster is taken off
+        # the end of the last note of the syllable.
+        coda = [(i, p) for i, p in rest[1:] if not voice.is_vowel(p)]
+        tail = sum(length_of(i, p) for i, p in coda)
+        tail = min(tail, max(0.0, (end - start) * 0.4))
+        vowel_end = end - tail
+        if rest:
+            timeline.append((rest[0][1], start, max(start + 0.02, vowel_end)))
+            cursor = max(start + 0.02, vowel_end)
+            share = tail / max(sum(length_of(i, p) for i, p in coda), 1e-9)
+            for i, p in rest[1:]:
+                d = length_of(i, p) * share if (i, p) in coda else 0.03
+                d = max(d, MIN_PHONEME_S)
                 timeline.append((p, cursor, cursor + d))
                 cursor += d
-
-            # The vowel holds the note. A final consonant cluster is taken off
-            # the end of the last note of the syllable.
-            coda = [p for p in rest[1:] if not voice.is_vowel(p)]
-            tail = sum(voice.consonant_len(p) for p in coda)
-            tail = min(tail, max(0.0, (end - start) * 0.4))
-            vowel_end = end - tail
-            if rest:
-                timeline.append((rest[0], start, max(start + 0.02, vowel_end)))
-                cursor = max(start + 0.02, vowel_end)
-                for p in rest[1:]:
-                    d = tail / max(len(coda), 1) if p in coda else 0.03
-                    d = max(d, MIN_PHONEME_S)
-                    timeline.append((p, cursor, cursor + d))
-                    cursor += d
-            else:
-                timeline.append((voice.silence(), start, end))
+        else:
+            timeline.append((voice.silence(), start, end))
 
     return timeline, notes
 
@@ -608,24 +754,45 @@ def midi_to_hz(m):
     return 440.0 * 2.0 ** ((m - 69) / 12.0)
 
 
-def f0_curve(notes, tempo, start_s, frames, frame_s, vibrato=True, seed=0):
-    """A singer's pitch line through the phrase's notes.
+def written_pitch(notes, clock, start_s, frames, frame_s):
+    """The pitch line exactly as written: one MIDI number per frame, no shaping.
+
+    This is the score's own answer, and it has two jobs. It is the fallback
+    when no `dspitch` model is available, via `f0_curve()` below, and it is
+    what `dspitch` is *conditioned on* when one is: the model renders a
+    deviation around the written notes rather than a melody of its own.
+    """
+    t = start_s + np.arange(frames) * frame_s
+    pitch = np.zeros(frames)
+    spans = [(seconds(n["when"], clock), seconds(n["when"] + n["dur"], clock),
+              float(n["pitch"])) for n in notes]
+    for a, b, p in spans:
+        pitch[(t >= a) & (t < b)] = p
+    pitch[t < spans[0][0]] = spans[0][2]
+    pitch[t >= spans[-1][1]] = spans[-1][2]
+    # A rest between two notes leaves a hole; hold the note before it, so the
+    # curve handed to the vocoder is continuous even where nothing sounds.
+    for i in range(1, frames):
+        if pitch[i] == 0:
+            pitch[i] = pitch[i - 1]
+    return pitch, spans, t
+
+
+def f0_curve(notes, clock, start_s, frames, frame_s, vibrato=True, seed=0):
+    """A singer's pitch line through the phrase's notes, shaped by hand.
 
     A flat f0 per note is what makes synthetic singing sound synthetic, so
     three things are added: portamento across note changes (fast for small
     intervals, slower for leaps), vibrato that fades in on notes long enough to
     hold, and a slow random drift of a few cents.
+
+    This is the stand-in for a `dspitch` model, and it is what `--literal-pitch`
+    selects when a bank has one: the shapes here are generic where the model's
+    are that singer's own, but they are also exactly reproducible and they never
+    scoop into a note, which is what a score-following video wants.
     """
     rng = random.Random(seed)
-    t = start_s + np.arange(frames) * frame_s
-    pitch = np.zeros(frames)
-
-    spans = [(seconds(n["when"], tempo), seconds(n["when"] + n["dur"], tempo),
-              float(n["pitch"])) for n in notes]
-    for i, (a, b, p) in enumerate(spans):
-        pitch[(t >= a) & (t < b)] = p
-    pitch[t < spans[0][0]] = spans[0][2]
-    pitch[t >= spans[-1][1]] = spans[-1][2]
+    pitch, spans, t = written_pitch(notes, clock, start_s, frames, frame_s)
 
     for i in range(1, len(spans)):
         prev, cur = spans[i - 1][2], spans[i][2]
@@ -664,8 +831,31 @@ def f0_curve(notes, tempo, start_s, frames, frame_s, vibrato=True, seed=0):
 # inference
 # --------------------------------------------------------------------------
 
-def render_phrase(voice, timeline, notes, tempo, steps, variance, depth=1.0,
-                  voice_mode=None):
+def note_spans(timeline, notes, clock):
+    """The phrase as a note sequence for `dspitch`: [(midi or None, seconds)].
+
+    It has to cover the phoneme timeline exactly and contiguously -- head
+    padding, the rests between notes and the tail are all notes as far as the
+    model is concerned, just ones marked as rests.
+    """
+    start, end = timeline[0][1], timeline[-1][2]
+    spans, cursor = [], start
+    for n in notes:
+        a = max(seconds(n["when"], clock), cursor)
+        b = min(seconds(n["when"] + n["dur"], clock), end)
+        if b <= cursor:
+            continue
+        if a > cursor + 1e-6:
+            spans.append((None, a - cursor))
+        spans.append((int(n["pitch"]), b - a))
+        cursor = b
+    if end > cursor + 1e-6:
+        spans.append((None, end - cursor))
+    return spans or [(None, max(end - start, 1e-3))]
+
+
+def render_phrase(voice, timeline, notes, clock, steps, variance, depth=1.0,
+                  voice_mode=None, literal_pitch=False, expressiveness=1.0):
     """One phrase of phonemes and pitch through acoustic + vocoder."""
     frame_s = voice.frame_s
     start_s = timeline[0][1]
@@ -683,7 +873,21 @@ def render_phrase(voice, timeline, notes, tempo, steps, variance, depth=1.0,
             tok = voice.token(voice.silence())
         tokens.append(tok)
 
-    f0 = f0_curve(notes, tempo, start_s, total, frame_s)
+    predictors = getattr(voice, "predictors", None)
+    phones = [ph for ph, _a, _b in timeline]
+    ph_seconds = [d * frame_s for d in durations]
+    written, _spans, _t = written_pitch(notes, clock, start_s, total, frame_s)
+
+    f0, pitch_model = None, predictors and predictors.pitch
+    if pitch_model is not None and not literal_pitch:
+        curve = pitch_model.predict(phones, ph_seconds,
+                                    note_spans(timeline, notes, clock),
+                                    written, total, expressiveness, steps)
+        if curve is not None:
+            f0 = midi_to_hz(np.asarray(curve, dtype=np.float64)).astype(np.float32)
+            predictors.used.add("dspitch")
+    if f0 is None:
+        f0 = f0_curve(notes, clock, start_s, total, frame_s)
 
     meta = {i.name: i for i in voice.acoustic.get_inputs()}
     avail = set(meta)
@@ -720,12 +924,34 @@ def render_phrase(voice, timeline, notes, tempo, steps, variance, depth=1.0,
             d = min(int(depth * 1000) if depth <= 1.0 else int(depth), cap)
             feed["depth"] = shaped("depth", max(speedup, d // speedup * speedup),
                                    np.int64)
-    for name, level in (("energy", variance["energy"]),
-                        ("breathiness", variance["breathiness"]),
-                        ("voicing", variance["voicing"]),
-                        ("tension", variance["tension"])):
+    # The variance parameters are log-domain, roughly dB, where 0 is unity and
+    # -96 is silence. A flat 0 therefore means "full" everywhere, which is why
+    # a bank rendered without `dsvariance` sounds even rather than silent.
+    # `--variance` stays an offset on top of whatever the model says, matching
+    # how OpenUtau applies a user's curves.
+    curves = {}
+    if predictors and predictors.variance is not None:
+        wanted = [n for n in ("energy", "breathiness", "voicing", "tension")
+                  if n in avail]
+        if not wanted:
+            # A bank can ship dsvariance and an acoustic model that asks for
+            # none of it. Nothing is lost and nothing should be warned about.
+            predictors.used.add("dsvariance")
+            predictors.not_needed.add("dsvariance")
+        else:
+            got = predictors.variance.predict(phones, ph_seconds, written,
+                                              total, steps)
+            if got:
+                curves = {k: v for k, v in got.items() if k in wanted}
+                if curves:
+                    predictors.used.add("dsvariance")
+    for name in ("energy", "breathiness", "voicing", "tension"):
         if name in avail:
-            feed[name] = np.full((1, total), level, dtype=np.float32)
+            base = curves.get(name)
+            feed[name] = (np.full((1, total), variance[name], dtype=np.float32)
+                          if base is None else
+                          (np.asarray(base, dtype=np.float32)[None, :total]
+                           + variance[name]))
     if "velocity" in avail:
         feed["velocity"] = np.ones((1, total), dtype=np.float32)
     if "gender" in avail:
@@ -761,12 +987,12 @@ def render_phrase(voice, timeline, notes, tempo, steps, variance, depth=1.0,
     return np.asarray(wave_out, dtype=np.float32).reshape(-1), start_s
 
 
-def preview_phrase(voice, timeline, notes, tempo):
+def preview_phrase(voice, timeline, notes, clock):
     """The same phoneme timeline and pitch curve, through the built-in voice."""
     frame_s = voice.frame_s
     start_s = timeline[0][1]
     frames = int(round((timeline[-1][2] - start_s) / frame_s)) + 1
-    f0 = f0_curve(notes, tempo, start_s, frames, frame_s)
+    f0 = f0_curve(notes, clock, start_s, frames, frame_s)
     return voice.pv.render(timeline, f0, frame_s), start_s
 
 
@@ -819,10 +1045,25 @@ def main():
                     help="for multi-speaker banks: which voice mode to sing in")
     ap.add_argument("--steps", type=int, default=20,
                     help="diffusion steps: more is slower and smoother")
+    ap.add_argument("--depth", type=float, default=1.0, metavar="D",
+                    help="shallow-diffusion depth 0-1, where the model exposes "
+                         "it: lower starts denoising closer to the answer")
     ap.add_argument("--gain", type=float, default=1.0)
     ap.add_argument("--no-vibrato", action="store_true")
+    ap.add_argument("--literal-timing", action="store_true",
+                    help="ignore the bank's dsdur model and split syllables "
+                         "with the built-in constants instead")
+    ap.add_argument("--literal-pitch", action="store_true",
+                    help="ignore the bank's dspitch model and follow the "
+                         "written notes, with synthetic portamento and vibrato "
+                         "-- what a score-following video wants")
+    ap.add_argument("--expressiveness", type=float, default=1.0, metavar="X",
+                    help="how far dspitch may depart from the written notes, "
+                         "0 to 1 (0 reproduces them exactly)")
     ap.add_argument("--variance", default="0,0,0,0", metavar="E,B,V,T",
-                    help="flat energy,breathiness,voicing,tension levels")
+                    help="energy,breathiness,voicing,tension in dB, added on "
+                         "top of dsvariance where a bank has one and used flat "
+                         "where it does not (0 is unity, -96 is silence)")
     args = ap.parse_args()
 
     if args.inspect:
@@ -840,20 +1081,27 @@ def main():
     if args.line not in lines:
         die(f"no lyric line {args.line} (found: {sorted(lines)})")
     line = lines[args.line]
-    tempo = doc["tempo"]
+    clock = Clock(doc.get("tempo_map"), doc.get("tempo"))
 
     if args.preview:
         voice = PreviewVoice()
         print("  voice   built-in formant preview (no voicebank): "
               "timing and pitch are real, the timbre is not")
     elif args.voice:
-        voice = Voice(args.voice, args.vocoder, args.phonemizer)
+        wanted = tuple(k for k, off in (("duration", args.literal_timing),
+                                        ("pitch", args.literal_pitch),
+                                        ("variance", False)) if not off)
+        voice = Voice(args.voice, args.vocoder, args.phonemizer,
+                      args.voice_mode, wanted)
         print(f"  voice   {voice.dir.name}: {len(voice.phonemes)} phonemes, "
               f"{len(voice.entries)} dictionary entries, {voice.sample_rate} Hz")
         if voice.speakers:
             chosen = args.voice_mode or voice.speakers[0]
             print(f"  modes   {', '.join(Path(s).name for s in voice.speakers)}"
                   f"  -> singing as {Path(chosen).name}")
+        for note in voice.predictors.notes:
+            print(f"  ! {note}")
+        print(f"  models  acoustic + vocoder, plus {voice.predictors.summary()}")
     else:
         die("pass --voice /path/to/voicebank, or --preview to hear the line "
             "through the built-in formant voice")
@@ -865,19 +1113,20 @@ def main():
         die("--variance wants four numbers, e.g. 0,0,0,0")
 
     warn = set()
-    phrases = phrase_split(line["notes"], tempo)
-    total_s = max(seconds(n["when"] + n["dur"], tempo) for n in line["notes"]) + 1.0
+    phrases = phrase_split(line["notes"], clock)
+    total_s = max(seconds(n["when"] + n["dur"], clock) for n in line["notes"]) + 1.0
     track = np.zeros(int(total_s * voice.sample_rate) + voice.sample_rate, dtype=np.float32)
 
     for i, phrase in enumerate(phrases, 1):
-        timeline, notes = phonemize(voice, phrase, tempo, warn)
+        timeline, notes = phonemize(voice, phrase, clock, warn)
         timeline = fill_silences(voice, timeline)
         if args.preview:
-            audio, start_s = preview_phrase(voice, timeline, notes, tempo)
+            audio, start_s = preview_phrase(voice, timeline, notes, clock)
         else:
-            audio, start_s = render_phrase(voice, timeline, notes, tempo,
-                                           args.steps, variance,
-                                           voice_mode=args.voice_mode)
+            audio, start_s = render_phrase(voice, timeline, notes, clock,
+                                           args.steps, variance, args.depth,
+                                           args.voice_mode, args.literal_pitch,
+                                           args.expressiveness)
         # The head padding and the first consonant can begin before beat 0.
         # Clamping the position would slide the whole phrase late; trim instead.
         at = int(start_s * voice.sample_rate)
@@ -887,6 +1136,31 @@ def main():
         track[at:end] += audio[:end - at] * args.gain
         print(f"  phrase {i}/{len(phrases)}: {len(timeline)} phonemes, "
               f"{len(audio) / voice.sample_rate:.1f}s at {start_s:.1f}s")
+
+    # Say what actually ran. A bank without dspitch is common and fine; a run
+    # that quietly sounded worse because a folder was missing or a model
+    # declined is not, and it is invisible from the audio alone.
+    predictors = getattr(voice, "predictors", None)
+    if predictors is not None:
+        for folder, model, flag, what in (
+                ("dsdur", predictors.duration, args.literal_timing,
+                 "phoneme durations from the constant table"),
+                ("dspitch", predictors.pitch, args.literal_pitch,
+                 "written pitch with synthetic portamento and vibrato"),
+                ("dsvariance", predictors.variance, False,
+                 "flat variance inputs")):
+            if model is not None and folder in predictors.used:
+                if folder in predictors.not_needed:
+                    print(f"  {folder} not used: this acoustic model asks for "
+                          "no variance inputs")
+                continue
+            if flag:
+                print(f"  {folder} disabled by flag: {what}")
+            elif model is not None:
+                print(f"  ! {folder} is present but declined this line: {what}")
+        for name, phones in predictors.unknown_phonemes().items():
+            print(f"  ! {name} has no token for {', '.join(phones)}; "
+                  "sung as silence in that model's view of the line")
 
     plugged = getattr(voice, "from_plugin", set())
     guessed = getattr(voice, "from_g2p", set())

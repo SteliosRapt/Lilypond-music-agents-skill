@@ -200,7 +200,7 @@ def describe(parts, held_threshold=4.0):
     if held:
         lines.append("")
         lines.append(f"  mostly sustained: {', '.join(held)}")
-        lines.append(f"  -> over half of these parts' sounding time is inside notes of")
+        lines.append("  -> over half of these parts' sounding time is inside notes of")
         lines.append(f"     {held_threshold:.0f} quarters or more. Velocity cannot change while a note")
         lines.append("     sounds, so hairpins across them cannot be performed as velocity.")
         lines.append("     render.py rewrites those as CC11 expression ramps automatically;")

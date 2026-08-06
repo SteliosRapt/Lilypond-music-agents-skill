@@ -116,6 +116,20 @@ def find_soundfont(explicit=None):
     return sf
 
 
+def select_parts(key, parts, flag):
+    """Resolve one `--mix`/`--eq` key to the parts it names."""
+    from midi_split import gm_names
+    names = gm_names()
+    hits = [p for p in parts
+            if key == str(p["index"])
+            or key.lower() in p["name"].lower()
+            or key.lower() in names.get(p["program"], "").lower()]
+    if not hits:
+        raise SystemExit(f"{flag}: nothing matches {key!r}. Parts are:\n"
+                         + describe(parts))
+    return hits
+
+
 def parse_mix(spec, parts):
     """Parse `--mix "koto=-7,voice=+4/-0.3"` into {part index: (gain_dB, pan)}.
 
@@ -124,8 +138,6 @@ def parse_mix(spec, parts):
     decibels; `mute` silences the part. The optional value after `/` is stereo
     balance, -1 hard left to 1 hard right.
     """
-    from midi_split import gm_names
-    names = gm_names()
     settings = {}
     for item in (i.strip() for i in spec.split(",") if i.strip()):
         if "=" not in item:
@@ -134,31 +146,132 @@ def parse_mix(spec, parts):
         pan = 0.0
         if "/" in value:
             value, pan_s = value.split("/", 1)
-            pan = max(-1.0, min(1.0, float(pan_s)))
-        gain = -120.0 if value.lower() in ("mute", "off") else float(value)
-
-        hits = [p for p in parts
-                if key == str(p["index"])
-                or key.lower() in p["name"].lower()
-                or key.lower() in names.get(p["program"], "").lower()]
-        if not hits:
-            raise SystemExit(f"--mix: nothing matches {key!r}. Parts are:\n"
-                             + describe(parts))
-        for p in hits:
+            try:
+                pan = max(-1.0, min(1.0, float(pan_s)))
+            except ValueError:
+                raise SystemExit(f"--mix: {pan_s!r} is not a stereo balance "
+                                 "(a number from -1 to 1)")
+        if value.lower() in ("mute", "off"):
+            gain = -120.0
+        else:
+            try:
+                gain = float(value)
+            except ValueError:
+                raise SystemExit(f"--mix: {value!r} is not a gain in dB "
+                                 "(or 'mute')")
+        for p in select_parts(key, parts, "--mix"):
             settings[p["index"]] = (gain, pan)
     return settings
 
 
-def master_chain(dur, reverb, tail, limit=False):
-    """Shared post-processing: room, band limits, levelling, tail fade."""
+# The named curves --eq accepts. Each is a list of ffmpeg filter fragments, and
+# each exists because it is a fix for something a General MIDI rendering does
+# to a specific family of instruments -- see references/audio-and-midi.md
+# section 10, which is where the frequencies are justified.
+# `equalizer` is always a bell, whatever `t` is set to: `t` names the *unit* of
+# the width, not the shape (h = hertz, q = Q factor, o = octaves). A shelf is a
+# different filter -- `highshelf`/`lowshelf` -- and writing `equalizer=t=h:w=0.7`
+# in the hope of one gives a bell 0.7 Hz wide, which is silence dressed as a
+# setting: measured, it moved its band by 0.02 dB.
+EQ_PRESETS = {
+    "warm":    ["equalizer=f=250:t=q:w=1.0:g=2.5",
+                "equalizer=f=3200:t=q:w=1.2:g=-3"],
+    "bright":  ["highshelf=f=5000:t=q:w=0.7:g=3",
+                "equalizer=f=300:t=q:w=1.0:g=-1.5"],
+    "clear":   ["equalizer=f=400:t=q:w=1.4:g=-3.5",
+                "equalizer=f=2500:t=q:w=1.0:g=2"],
+    "thin":    ["highpass=f=180", "equalizer=f=800:t=q:w=1.2:g=-2"],
+    "body":    ["equalizer=f=120:t=q:w=1.0:g=3",
+                "equalizer=f=500:t=q:w=1.2:g=-2"],
+    "air":     ["highshelf=f=7000:t=q:w=0.7:g=3.5"],
+    "distant": ["lowpass=f=5000", "equalizer=f=200:t=q:w=1.0:g=-2"],
+    "vocal":   ["highpass=f=90", "equalizer=f=250:t=q:w=1.2:g=-2.5",
+                "equalizer=f=2800:t=q:w=1.0:g=2.5",
+                "highshelf=f=7000:t=q:w=0.7:g=2"],
+}
+
+
+def parse_eq(spec, parts):
+    """Parse `--eq "koto=warm,drums=hp:120,voice=2500+3/1.2"` per part.
+
+    Three forms, and they compose left to right: parts are separated by commas
+    and a part's stages by `|`, which is not `+` because `+` is already the
+    sign of a bell's gain and `2500+3` has to stay readable.
+
+        warm            a named curve from EQ_PRESETS
+        hp:120 lp:9000  a high-pass or low-pass at that frequency
+        2500+3/1.4      a peaking bell: frequency, gain in dB, optional /Q
+        400-3           the same, cutting
+
+    Bells are what actually fix a rendering -- the presets are bells with names
+    -- and the Q defaults to 1.0, about an octave wide, which is broad enough
+    to sound like a tone change rather than a filter.
+    """
+    settings = {}
+    for item in (i.strip() for i in spec.split(",") if i.strip()):
+        if "=" not in item:
+            raise SystemExit(f"--eq: expected key=value, got {item!r}")
+        key, value = (v.strip() for v in item.split("=", 1))
+        chain = []
+        for stage in (s.strip() for s in value.split("|") if s.strip()):
+            chain += eq_stage(stage)
+        if not chain:
+            raise SystemExit(f"--eq: {value!r} describes no filter")
+        for p in select_parts(key, parts, "--eq"):
+            settings.setdefault(p["index"], []).extend(chain)
+    return settings
+
+
+BELL_RE = re.compile(r"^(\d+(?:\.\d+)?)([+-]\d+(?:\.\d+)?)(?:/(\d+(?:\.\d+)?))?$")
+
+
+def eq_stage(stage):
+    """One `--eq` stage to ffmpeg filter fragments."""
+    if stage in EQ_PRESETS:
+        return list(EQ_PRESETS[stage])
+    for prefix, filt in (("hp:", "highpass"), ("lp:", "lowpass")):
+        if stage.startswith(prefix):
+            try:
+                return [f"{filt}=f={float(stage[len(prefix):]):.0f}"]
+            except ValueError:
+                raise SystemExit(f"--eq: {stage!r} needs a frequency in Hz")
+    # A bell written the way it is spoken: "2500 plus 3 dB, Q of 1.4".
+    m = BELL_RE.match(stage)
+    if m:
+        freq, gain, q = m.group(1), m.group(2), m.group(3) or "1.0"
+        return [f"equalizer=f={float(freq):.0f}:t=q:w={float(q):.2f}:"
+                f"g={float(gain):.2f}"]
+    raise SystemExit(
+        f"--eq: cannot read {stage!r}. Expected a preset "
+        f"({', '.join(sorted(EQ_PRESETS))}), hp:HZ, lp:HZ, or a bell like "
+        "2500+3 or 400-3/1.4")
+
+
+def master_chain(dur, reverb, tail, limit=False, eq=(), band=(35.0, 9500.0)):
+    """Shared post-processing: room, tone, band limits, levelling, tail fade.
+
+    Order is not cosmetic. Reverb first, so the room is coloured with
+    everything else rather than added on top of a shaped signal; then any
+    master EQ, while the level is still whatever the mix made it; then the
+    limiter, which must see the final peaks; then the band limits and
+    levelling; and the fade last, over the top of all of it.
+
+    The band limits sit *after* every EQ in the chain, per-part ones included,
+    and that is a trap worth knowing rather than a detail: with the default
+    9.5 kHz ceiling, boosting 11 kHz anywhere upstream is inaudible, because
+    this filter removes it again. `--band` is how you open the top up.
+    """
     chain = []
     if reverb:
         # a cheap hall tail; afir with a real impulse response is better if you have one
         chain.append("aecho=0.85:0.9:70|130|220|400:0.35|0.25|0.18|0.1")
+    chain += list(eq)
     if limit:
         # summing several parts can peak above unity where one part never did
         chain.append("alimiter=limit=0.95")
-    chain += ["highpass=f=35", "lowpass=f=9500", "dynaudnorm=p=0.65:m=5",
+    low, high = band
+    chain += [f"highpass=f={low:.0f}", f"lowpass=f={high:.0f}",
+              "dynaudnorm=p=0.65:m=5",
               f"afade=t=out:st={max(dur - tail, 0):.2f}:d={tail:.2f}"]
     return chain
 
@@ -169,36 +282,40 @@ def duration_of(path):
 
 
 def synthesize(midi, work, out_mp3, soundfont=None, gain=1.0, reverb=True, tail=3.0,
-               mix=None, parts=None, vocal=None, vocal_gain=0.0):
+               mix=None, parts=None, vocal=None, vocal_gain=0.0, eq=None,
+               master_eq=(), vocal_eq=(), band=(35.0, 9500.0)):
     """MIDI -> mastered mp3, in one pass or as a per-part mix.
 
-    Without `mix` the whole file goes through fluidsynth once, which is fast and
-    is what the balance in the score gives you. With `mix`, each part is
-    synthesised separately and summed with its own gain and stereo balance, so
-    the relative loudness of the instruments is a decision rather than an
-    accident of how loud each soundfont sample happens to be.
+    Without `mix` or `eq` the whole file goes through fluidsynth once, which is
+    fast and is what the balance in the score gives you. With either, each part
+    is synthesised separately and summed with its own gain, stereo balance and
+    tone, so how the instruments sit against each other is a decision rather
+    than an accident of how loud and how bright each soundfont sample happens
+    to be.
     """
     sf = find_soundfont(soundfont)
 
     def render_midi(src, dst):
         run(["fluidsynth", "-ni", "-F", dst, "-r", "44100", "-g", str(gain), "-R", "1", sf, src])
 
-    if not mix and not vocal:
+    per_part = bool(mix or eq)
+    if not per_part and not vocal:
         wav = os.path.join(work, "raw.wav")
         render_midi(midi, wav)
-        chain = master_chain(duration_of(wav), reverb, tail)
+        chain = master_chain(duration_of(wav), reverb, tail, eq=master_eq,
+                             band=band)
         run(["ffmpeg", "-y", "-i", wav, "-af", ",".join(chain),
              "-c:a", "libmp3lame", "-b:a", "192k", out_mp3])
         return duration_of(out_mp3)
 
-    if not mix:
+    if not per_part:
         # A sung line to lay over the whole instrumental: one stem each.
         wav = os.path.join(work, "raw.wav")
         render_midi(midi, wav)
         longest = max(duration_of(wav), duration_of(vocal))
-        graph = [f"[1:a]volume={vocal_gain:.2f}dB[v]",
+        graph = [f"[1:a]{','.join(list(vocal_eq) + [f'volume={vocal_gain:.2f}dB'])}[v]",
                  "[0:a][v]amix=inputs=2:normalize=0[sum]",
-                 f"[sum]{','.join(master_chain(longest, reverb, tail, limit=True))}[out]"]
+                 f"[sum]{','.join(master_chain(longest, reverb, tail, True, master_eq, band))}[out]"]
         run(["ffmpeg", "-y", "-i", wav, "-i", vocal,
              "-filter_complex", ";".join(graph), "-map", "[out]",
              "-c:a", "libmp3lame", "-b:a", "192k", out_mp3])
@@ -220,18 +337,22 @@ def synthesize(midi, work, out_mp3, soundfont=None, gain=1.0, reverb=True, tail=
         cmd += ["-i", vocal]
     graph, labels = [], []
     for k, (part, _wav) in enumerate(stems):
-        g, pan = mix.get(part["index"], (0.0, 0.0))
-        steps = [f"volume={g:.2f}dB"]
+        g, pan = (mix or {}).get(part["index"], (0.0, 0.0))
+        # Tone before level, so a part's gain still means what --list-tracks
+        # and an ebur128 reading said it meant.
+        steps = list((eq or {}).get(part["index"], []))
+        steps.append(f"volume={g:.2f}dB")
         if pan:
             left, right = min(1.0, 1.0 - pan), min(1.0, 1.0 + pan)
             steps.append(f"pan=stereo|c0={left:.3f}*c0|c1={right:.3f}*c1")
         graph.append(f"[{k}:a]{','.join(steps)}[s{k}]")
         labels.append(f"[s{k}]")
     if vocal:
-        graph.append(f"[{len(stems)}:a]volume={vocal_gain:.2f}dB[sung]")
+        sung = list(vocal_eq) + [f"volume={vocal_gain:.2f}dB"]
+        graph.append(f"[{len(stems)}:a]{','.join(sung)}[sung]")
         labels.append("[sung]")
     graph.append(f"{''.join(labels)}amix=inputs={len(labels)}:normalize=0[sum]")
-    graph.append(f"[sum]{','.join(master_chain(longest, reverb, tail, limit=True))}[out]")
+    graph.append(f"[sum]{','.join(master_chain(longest, reverb, tail, True, master_eq, band))}[out]")
     cmd += ["-filter_complex", ";".join(graph), "-map", "[out]",
             "-c:a", "libmp3lame", "-b:a", "192k", out_mp3]
     run(cmd)
@@ -426,7 +547,8 @@ def build_video(pages, bars, frame, work, out_mp4, audio, audio_dur,
 # verification
 # --------------------------------------------------------------------------
 
-def verify(out_mp4, track, bars, samples, bar_w=6, fps=24, slack=4.0):
+def verify(out_mp4, track, bars, samples, bar_w=6, fps=24, slack=4.0,
+           work="."):
     """Sample frames and check the playhead really is where the music is.
 
     Worth doing every time.  A silently-missing or mis-scaled playhead looks
@@ -462,7 +584,9 @@ def verify(out_mp4, track, bars, samples, bar_w=6, fps=24, slack=4.0):
     for (ta, xa), (tb, xb) in spans[::step]:
         t = ta + (tb - ta) * 0.5
         expected = xa + (xb - xa) * 0.5
-        probe = "/tmp/_verify_frame.png"
+        # In the run's own working directory, not /tmp: two renders of two
+        # scores at once would otherwise read each other's probe frames.
+        probe = os.path.join(work, "verify-frame.png")
         run(["ffmpeg", "-y", "-ss", f"{t:.3f}", "-i", out_mp4, "-frames:v", "1", probe])
         a = np.array(Image.open(probe).convert("RGB")).astype(int)
         mask = (a[:, :, 0] - np.maximum(a[:, :, 1], a[:, :, 2])) > 40
@@ -543,8 +667,23 @@ def main():
                     help="per-part balance, e.g. 'koto=-7,voice=+4/-0.3': gain in dB "
                          "(or 'mute'), optional /stereo-balance from -1 to 1. Keys "
                          "match a part number or any substring of its name or sound.")
+    ap.add_argument("--eq", metavar="SPEC",
+                    help="per-part tone, e.g. 'koto=warm,drums=hp:120,"
+                         "shakuhachi=2500+3/1.4'. Keys select parts the same "
+                         "way --mix does; stages combine with '|'. A stage is "
+                         f"a preset ({', '.join(sorted(EQ_PRESETS))}), hp:HZ, "
+                         "lp:HZ, or a bell FREQ+GAIN[/Q] such as 400-3/1.2.")
+    ap.add_argument("--master-eq", metavar="SPEC",
+                    help="the same stage syntax, applied to the finished mix "
+                         "(no part key), e.g. 'clear|air'")
+    ap.add_argument("--vocal-eq", metavar="SPEC",
+                    help="the same, applied to the --vocal line alone")
+    ap.add_argument("--band", default="35:9500", metavar="LOW:HIGH",
+                    help="master high-pass and low-pass in Hz (default "
+                         "35:9500). These run after every EQ, so raise HIGH "
+                         "before boosting anything above it.")
     ap.add_argument("--list-tracks", action="store_true",
-                    help="print the parts available to --mix, then stop")
+                    help="print the parts available to --mix and --eq, then stop")
     ap.add_argument("--no-reverb", action="store_true")
     ap.add_argument("--no-swell", action="store_true",
                     help="skip CC11 expression: hairpins across held notes stay silent")
@@ -600,23 +739,41 @@ def main():
     audio_path, audio_dur = None, None
     if not args.no_audio and art["midi"]:
         mix = parse_mix(args.mix, parts) if args.mix else None
-        print(f"synthesising audio ({len(parts)} parts, mixed)" if mix
+        eq = parse_eq(args.eq, parts) if args.eq else None
+        master_eq = [f for s in (args.master_eq or "").split("|") if s.strip()
+                     for f in eq_stage(s.strip())]
+        vocal_eq = [f for s in (args.vocal_eq or "").split("|") if s.strip()
+                    for f in eq_stage(s.strip())]
+        try:
+            low, high = (float(v) for v in args.band.split(":"))
+        except ValueError:
+            sys.exit(f"--band wants LOW:HIGH in Hz, got {args.band!r}")
+        if not 0 < low < high:
+            sys.exit(f"--band: {low:.0f} Hz is not below {high:.0f} Hz")
+        print(f"synthesising audio ({len(parts)} parts, mixed)" if mix or eq
               else "synthesising audio ...")
         audio_path = os.path.join(outdir, f"{stem}.mp3")
         if args.vocal and not os.path.exists(args.vocal):
             sys.exit(f"--vocal file not found: {args.vocal}")
         audio_dur = synthesize(art["midi"], work, audio_path, args.soundfont,
                                args.gain, not args.no_reverb, mix=mix, parts=parts,
-                               vocal=args.vocal, vocal_gain=args.vocal_gain)
+                               vocal=args.vocal, vocal_gain=args.vocal_gain,
+                               eq=eq, master_eq=master_eq, vocal_eq=vocal_eq,
+                               band=(low, high))
         if args.vocal:
             print(f"  sung line: {os.path.basename(args.vocal)} "
-                  f"({args.vocal_gain:+.1f} dB)")
-        if mix:
-            for p in parts:
-                g, pan = mix.get(p["index"], (0.0, 0.0))
-                if g or pan:
-                    where = f" pan {pan:+.1f}" if pan else ""
-                    print(f"  {p['name']:<18} {'muted' if g < -100 else f'{g:+.1f} dB'}{where}")
+                  f"({args.vocal_gain:+.1f} dB)"
+                  + (f" eq {args.vocal_eq}" if vocal_eq else ""))
+        for p in parts:
+            g, pan = (mix or {}).get(p["index"], (0.0, 0.0))
+            tone = (eq or {}).get(p["index"])
+            if g or pan or tone:
+                where = f" pan {pan:+.1f}" if pan else ""
+                level = "muted" if g < -100 else f"{g:+.1f} dB"
+                shaped = f"  [{', '.join(tone)}]" if tone else ""
+                print(f"  {p['name']:<18} {level}{where}{shaped}")
+        if master_eq:
+            print(f"  master eq          [{', '.join(master_eq)}]")
         print(f"  {audio_dur:.1f}s")
 
     if args.no_video or not audio_path:
@@ -663,7 +820,7 @@ def main():
               open(os.path.join(work, "layout.json"), "w"), indent=1)
 
     if args.verify:
-        verify(out_mp4, track, bars, args.verify, bar_w, args.fps)
+        verify(out_mp4, track, bars, args.verify, bar_w, args.fps, work=work)
 
     if not args.keep_temp:
         shutil.rmtree(work, ignore_errors=True)
