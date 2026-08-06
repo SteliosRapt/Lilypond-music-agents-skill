@@ -13,7 +13,8 @@ models; that one is the queue of work.
 
 Run `python3 lilypond-music/scripts/dev/selftest.py` before believing any of it.
 It builds a stub voicebank, renders a score written to break the pipeline, and
-checks 51 invariants in about a minute. `--video` adds playhead verification;
+checks 83 invariants in about two minutes, against stub banks in both of the
+export conventions real banks use. `--video` adds playhead verification;
 `--voice ~/voices/tiger --vocoder ~/voices/pc_nsf_hifigan` swaps the stub for a
 real bank.
 
@@ -45,10 +46,19 @@ Verified working, with real files:
   `scripts/dev/vocoder_resynth_check.py`: mel correlation 0.978 against the
   source signal, pitch preserved to a median 1.7 cents. The vocoder half of the
   contract is confirmed, not assumed.
-- `dsvariance` against a stub only -- no bank to hand ships one. The code path
-  is driven entirely by what the model declares and falls back to flat inputs
-  if anything is unrecognised, so an unfamiliar variant degrades rather than
-  guesses.
+- **Three more banks, since**: CANARY v106, TRITON v106 and LIEE MM 2.8, each
+  downloaded from its own GitHub release and put through
+  `scripts/dev/bank_check.py`. All four sing, place every vowel on its written
+  onset, and track the written notes to a couple of cents under
+  `--literal-pitch`. What they cost in code is section 9 below;
+  `references/singing-synthesis.md` sections 8 and 9 are the user-facing
+  version.
+- `dsvariance` **against a real bank at last** -- LIEE MM 2.8 ships one, and it
+  predicts all four parameters. It takes the four curves back as *inputs*
+  alongside a retake mask, which the stub did not, so the model was being
+  declined until that was fixed. The code path is still driven entirely by what
+  the model declares and falls back to flat inputs if anything is unrecognised,
+  so an unfamiliar variant degrades rather than guesses.
 - `scripts/preview_voice.py` (`--preview`): a formant synthesiser needing no
   bank, running the same `phonemize()` and pitch code as the real path.
 
@@ -188,17 +198,22 @@ loop: while position < len(word): pred = f(src, history, position)
 
 ## 6. How to test without burning hours
 
-1. **`scripts/dev/selftest.py`** -- the whole pipeline, 51 checks, about a
-   minute. Everything below is what it drives.
-2. **`scripts/dev/make_stub_bank.py`** builds a bank whose ONNX graphs declare
+1. **`scripts/dev/selftest.py`** -- the whole pipeline, 83 checks, about two
+   minutes. Everything below is what it drives.
+2. **`scripts/dev/bank_check.py`** -- one bank rather than the pipeline: what it
+   declares, which models were fed, where the words came from, and measured
+   pitch and vowel placement. Run it first on a bank nobody here has tried.
+3. **`scripts/dev/make_stub_bank.py`** builds a bank whose ONNX graphs declare
    the real interface and compute nonsense, including all three predictors. Its
    `dspitch` returns the written pitch plus exactly a quarter tone, so a caller
    that ignores the prediction fails rather than sounding slightly different.
-3. **`scripts/dev/vocoder_resynth_check.py`** drives the real vocoder from a mel
+   `--continuous` writes the same bank in the newer export convention, and the
+   self-test runs against both.
+4. **`scripts/dev/vocoder_resynth_check.py`** drives the real vocoder from a mel
    computed off a known signal. If output ever turns to noise, this says whether
    the vocoder or the acoustic model is at fault. Needs `librosa`.
-4. **`--preview`** for anything about alignment, phrasing or note timing.
-5. Only then the real bank. `--steps 8` while iterating, 20+ for a take.
+5. **`--preview`** for anything about alignment, phrasing or note timing.
+6. Only then the real bank. `--steps 8` while iterating, 20+ for a take.
 
 Useful checks on real output: sample count should equal
 `sum(durations) * hop_size`; each syllable's vowel should start within a frame
@@ -207,10 +222,17 @@ written notes within a few cents outside portamento.
 
 ## 7. What is left
 
-- **`dsvariance` has never met a real bank.** The code is written from declared
-  interfaces and tested against a stub. When a bank with one turns up, check
-  the `retake` axis order and that the returned curves are in the log domain
-  the acoustic model expects before trusting the sound.
+- **`dsvariance` has met exactly one real bank.** LIEE's is used and its curves
+  are in the log domain the acoustic model expects, but LIEE's acoustic model
+  asks for only `tension` of the four, so the other three are computed and
+  discarded. A bank with `use_energy_embed: true` would be the first real test
+  of energy reaching the acoustic model.
+- **The pronunciation gap on non-tigermeat banks.** LIEE ships 208 English
+  words and no English phonemizer plugin, so anything else is spelled out by
+  rule. The plugin format is understood (section 4) and any matching plugin can
+  be pointed at with `--phonemizer`; what is missing is one that matches LIEE's
+  phone conventions. Extending a copy of its `dsdict-en.yaml` is the practical
+  answer and nothing automates it.
 - **Voice-mode crossfading.** OpenUtau varies `spk_embed` per frame to blend
   modes; one fixed mode is held across a phrase here, because a score has
   nowhere to say otherwise.
@@ -222,16 +244,72 @@ written notes within a few cents outside portamento.
 
 ## 8. Environment notes
 
-- GitHub (pages, API and `release-assets.githubusercontent.com`) and `pypi.org`
-  are reachable from bash; Hugging Face and Google Drive are not. TIGER:
-  `curl -sL -o tiger.zip https://github.com/spicytigermeat/tiger_diffsinger/releases/download/v102/TIGER_DS_v102_PACK.zip`
-  -- 566 MB in about seven seconds. The pack holds `Voice Library/` (point
-  `--voice` at it, after unzipping the zip inside) and `OpenUTAU Plugins/`.
+- Release *assets* on github.com download fine
+  (`github.com/<owner>/<repo>/releases/download/<tag>/<file>`), as does
+  `raw.githubusercontent.com` and `pypi.org`. What is currently blocked: the
+  GitHub **API** (403), github.com HTML pages from `curl` (403, though the
+  WebFetch tool reaches them), and `diffsinger.miraheze.org`, which answers
+  automated requests with a bot challenge. Asset filenames therefore have to
+  come from a rendered releases page rather than from the API.
+- The four banks used, all as `curl -sL -o x.zip <url>`, each a few seconds:
+  - `github.com/spicytigermeat/tiger_diffsinger/releases/download/v102/TIGER_DS_v102_PACK.zip` (540 MB)
+  - `github.com/spicytigermeat/canary_diffsinger/releases/download/v106/CANARY_DS_v106_PACK.zip` (520 MB)
+  - `github.com/spicytigermeat/triton_diffsinger/releases/download/v106/TRITON_DS_v106_PACK.zip` (518 MB)
+  - `github.com/julieraptor/DIFFSINGER-LIEE-Immortal-Idol/releases/download/MM2.8/Diffsinger.LIEE.Immortal.Idol.MM.2.8.JubiLIEE.2025.1.1.zip` (283 MB)
+
+  The tigermeat packs hold `Voice Library/` (a zip inside a folder; unzip it and
+  point `--voice` at the result) and `OpenUTAU Plugins/`. LIEE's holds one zip
+  whose contents are the bank, with its plugins in `Phonemizers/` inside it.
 - `bash scripts/setup.sh` installs lilypond, fluidsynth, a GM soundfont and
   ffmpeg. `bash scripts/setup-singing.sh` adds onnxruntime and pyyaml;
   `--dev` also adds `onnx` and `librosa`, which the dev scripts need.
 - `.oudep` files are zips. Unzip and point `--vocoder` at the directory that
   directly contains the `.onnx`, not its parent.
 - Licensing to carry into any user-facing text: the vocoder is CC BY-NC-SA 4.0;
-  TIGER is CC BY-NC-ND 4.0 + Commons Clause. Non-commercial, and do not
-  redistribute modified weights.
+  TIGER and CANARY are CC BY-NC-ND 4.0 + Commons Clause; TRITON is an MIT-shaped
+  licence with a non-commercial clause and a prohibition on training image
+  generators on its art; LIEE ships its terms as a scanned PDF in the pack plus
+  publishing guidelines in its README (credit the bank, tag `#LIEEREY`). All
+  four: non-commercial, and do not redistribute modified weights.
+
+## 9. What the other three banks cost in code
+
+Every one of these was a silent failure -- the render succeeded and sounded
+plausible -- which is why each now has a line of output or a check behind it.
+
+- **`dspitch` declined on CANARY and TRITON.** Their `pitch.onnx` declares
+  `steps` where TIGER's declares `speedup`, and an unrecognised input makes the
+  whole call return None. Both names are offered now
+  (`_Model.acceleration()`), and a model that still declines records which
+  input it wanted (`_Model.refuses()`), which `sing.py` prints.
+- **`dsvariance` declined on LIEE.** Its variance model takes the four
+  parameter curves as inputs as well as outputs -- OpenUtau feeds the user's
+  curves and a retake mask. Flat zeros go in now, meaning "no user curve",
+  which is unity in the log domain.
+- **LIEE's phoneme tables are json**, with ids that start at 1. The predictors
+  read only line-numbered `phonemes.txt`, so every phone was unknown and each
+  model was fed a line of pure silence -- reported, but only as a warning.
+- **LIEE ships a dsdict that is not valid yaml** (`dsdict-zh-yue.yaml`, one list
+  item outdented by a space). `--inspect` died on it. Dictionary scans are
+  tolerant now; configs are still read strictly.
+- **The phonemizer plugin was chosen by file size.** With more than one bank
+  unpacked side by side, or with a pack that ships several languages, that
+  picks the wrong language: CANARY's own pack carries a French phonemizer
+  larger than its English one, and it renders "lanterns" as `l en sh ae r n p`
+  with no complaint, because French phones are a subset of CANARY's inventory.
+  Candidates are now scored against the bank's own dsdict -- the right plugin
+  agrees on 68% of 500 shared words, the French one on 2% -- and a bank with no
+  matching plugin gets none rather than the best of a bad set.
+  `scripts/phonemizer.py <plugin.dll>` also honours an explicit path now; it
+  used to search from it and answer about a different plugin.
+- **`--depth` was not clamped** to the `max_depth` a continuous-acceleration
+  bank declares (0.6 for CANARY and TRITON, where the classic export states the
+  same thing as a step count out of 1000).
+- **The mel band edges were never compared** when the two configs spelled them
+  differently (`fmin` in a bank's own vocoder.yaml, `mel_fmin` in openvpi's):
+  the check compared a number against None and passed.
+
+`make_stub_bank.py --continuous` now writes a stub in the newer export
+convention -- `steps`, fractional depth, json phoneme tables, variance curves as
+inputs -- and `selftest.py` runs the singing half against both stubs, so none of
+the above can be dropped again without a failing check.

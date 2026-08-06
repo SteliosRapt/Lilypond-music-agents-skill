@@ -199,10 +199,11 @@ def wav_seconds(path):
         return w.getnframes() / w.getframerate()
 
 
-def test_singing(work, voice, vocoder):
+def test_singing(work, source, voice, vocoder):
+    """`source` holds the extraction; `work` is this bank's own output dir."""
     label = Path(voice).name if voice else "stub bank"
     print(f"\nsinging ({label})")
-    vocals = work / "torture-vocals.json"
+    vocals = source / "torture-vocals.json"
 
     proc = run([sys.executable, SCRIPTS / "sing.py", vocals, "--preview",
                 "-o", work / "sing"])
@@ -225,6 +226,12 @@ def test_singing(work, voice, vocoder):
     check("no model was found and then silently skipped",
           "declined this line" not in proc.stdout,
           [l for l in proc.stdout.splitlines() if "declined" in l][:1])
+    # Where the words came from is not decoration: a bank whose phonemizer
+    # plugin was not found, or was found and belongs to another language, sings
+    # fluent nonsense and nothing else in the output says so.
+    check("the run says where pronunciations came from",
+          "  words   " in proc.stdout,
+          [l for l in proc.stdout.splitlines() if l.startswith("  words")][:1])
 
     proc = run([sys.executable, SCRIPTS / "sing.py", vocals, "--voice", voice,
                 "-o", work / "literal", "--steps", "4",
@@ -303,6 +310,24 @@ def test_predictors(work, voice, vocoder, real):
               float(np.median(np.abs(curve - written))) < 2.0,
               "a model output far from the score means wrong units")
 
+    # dsvariance: the newer export takes the four curves back as inputs, so a
+    # caller that only reads them declines the model and the run falls back to
+    # flat curves without anything having failed.
+    if voiced.predictors.variance is not None:
+        import numpy as np
+        model = voiced.predictors.variance
+        curves = model.predict([p for p, _a, _b in timeline], ph_seconds,
+                               written, frames)
+        if check("dsvariance returns curves", curves is not None,
+                 model.declined or ""):
+            check("one per parameter the folder says it predicts",
+                  set(curves) == set(model.wanted()),
+                  f"{sorted(curves)} vs {sorted(model.wanted())}")
+            check("each curve is one value per acoustic frame",
+                  all(len(c) == frames for c in curves.values()))
+            check("and they are log-domain offsets, not gains",
+                  all(float(np.max(np.abs(c))) < 96 for c in curves.values()))
+
 
 # ---------------------------------------------------------------------- main
 
@@ -318,12 +343,21 @@ def main():
 
     tmp = Path(tempfile.mkdtemp(prefix="lilypond-selftest-"))
     print(f"working in {tmp}")
-    voice, vocoder = args.voice, args.vocoder
-    if not voice:
-        proc = run([sys.executable, HERE / "make_stub_bank.py"], cwd=tmp)
-        if proc.returncode != 0:
-            sys.exit("could not build the stub bank -- pip install onnx")
-        voice = tmp / "stubvoice"
+    voices, vocoder = [], args.vocoder
+    if args.voice:
+        voices = [args.voice]
+    else:
+        # Both export conventions, because they declare different tensors and
+        # the pipeline handles each differently: `speedup` against `steps`,
+        # a step-count depth against a fractional one, a phoneme table counted
+        # by line against one with explicit ids, and a variance model that
+        # takes its curves back as inputs. Every one of those was found in a
+        # real bank, and the classic stub alone catches none of them.
+        for flag in ([], ["--continuous"]):
+            proc = run([sys.executable, HERE / "make_stub_bank.py"] + flag, cwd=tmp)
+            if proc.returncode != 0:
+                sys.exit("could not build the stub bank -- pip install onnx")
+        voices = [tmp / "stubvoice", tmp / "stubvoice-continuous"]
 
     doc = test_extraction(tmp)
     test_render(tmp, args.video)
@@ -331,8 +365,9 @@ def main():
     test_mix_errors(tmp)
     test_eq_parsing()
     if doc:
-        test_singing(tmp, voice, vocoder)
-        test_predictors(tmp, voice, vocoder, bool(args.voice))
+        for i, voice in enumerate(voices):
+            test_singing(tmp / f"sing{i}", tmp, voice, vocoder)
+            test_predictors(tmp, voice, vocoder, bool(args.voice))
 
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for name in FAIL:

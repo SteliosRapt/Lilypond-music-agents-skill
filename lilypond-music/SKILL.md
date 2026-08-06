@@ -99,9 +99,22 @@ audible in seconds rather than minutes. Only the timbre is fake.
 
 The voicebank is a separate download and is not bundled: English DiffSinger
 banks are almost all non-commercial and several forbid redistribution. Read the
-bank's terms. `references/singing-synthesis.md` covers what a bank has to
-contain, what the pipeline models and what it does not, and how to write lyrics
-that come out intelligible.
+bank's terms. `references/singing-synthesis.md` section 2 lists the banks that
+have actually been run through this pipeline, with their release URLs and what
+each one is good for -- TIGER, CANARY, TRITON and LIEE all work, and they differ
+in ways that matter (voice modes, phoneme sets, whether an English phonemizer
+ships with them). Section 8 is what varies between banks, and
+`python3 scripts/dev/bank_check.py ~/voices/mybank` qualifies an unfamiliar one
+in about two minutes: what it declares, which models were actually used, where
+its pronunciations came from, and how far the rendered notes sit from the
+written ones.
+
+**Unpack one bank per directory.** The phonemizer plugin -- the `.dll` in the
+pack, which is where a bank's real vocabulary lives -- is looked for beside the
+bank, and it must be the one for the language you are singing. Every run prints
+which plugin it chose and how far that plugin agrees with the bank's own
+dictionary; a low number there means the words are being pronounced by another
+language's rules, which sounds fluent and is wrong.
 
 A bank usually ships more than the acoustic model, and all of it is used: a
 `dsdur` model decides how each syllable's time divides between its consonants
@@ -244,9 +257,11 @@ glance at a thumbnail.
 - `references/gm-instruments.md` -- all 128 General MIDI instrument names as
   LilyPond spells them, plus the drum note vocabulary.
 - `references/singing-synthesis.md` -- the vocal pipeline: obtaining and
-  licensing a voicebank, how syllables are assigned to notes and phonemes to
-  syllables, how the pitch curve is built, what is not modelled, troubleshooting,
-  and why converting the score to MusicXML is the wrong way round.
+  licensing a voicebank (section 2 names four that were tested and where to get
+  them), how syllables are assigned to notes and phonemes to syllables, how the
+  pitch curve is built, what is not modelled, what differs between banks and how
+  to qualify a new one (sections 8 and 9), troubleshooting, and why converting
+  the score to MusicXML is the wrong way round.
 
 ## Scripts
 
@@ -274,6 +289,11 @@ glance at a thumbnail.
   (`python3 scripts/phonemizer.py ~/voices/mybank lanterns drift`) to see how a
   bank will pronounce a word, and whether that pronunciation is a guess.
 - `scripts/dev/selftest.py` -- runs the whole pipeline against a score written
-  to break it and checks 50-odd invariants. Run it after changing any of the
-  above; `--video` includes playhead verification, `--voice` uses a real bank
-  instead of a stub.
+  to break it and checks 80-odd invariants, against stub banks in both of the
+  export conventions real banks use. Run it after changing any of the above;
+  `--video` includes playhead verification, `--voice` uses a real bank instead
+  of a stub.
+- `scripts/dev/bank_check.py` -- qualifies one voicebank: what it declares,
+  which of its models the pipeline actually fed, where its pronunciations came
+  from, and measured pitch and vowel placement on a rendered line. The first
+  thing to run on a bank nobody has tried here.

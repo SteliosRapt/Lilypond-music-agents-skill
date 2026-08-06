@@ -16,12 +16,13 @@ Read this whole file first. Section 7 is the order to do it in.
 ## 1. The one command that governs everything
 
 ```bash
-python3 lilypond-music/scripts/dev/selftest.py          # 54 checks, 1m20s
+python3 lilypond-music/scripts/dev/selftest.py          # 83 checks, ~2 min
 python3 lilypond-music/scripts/dev/selftest.py --video  # + playhead verification
 ```
 
 Green before you start, green after every commit. It is not optional and it is
-not slow enough to skip. With a real voicebank it runs 57 checks:
+not slow enough to skip. With a real voicebank it runs against that bank
+instead of the two stubs -- 56 checks with TIGER, which has no `dsvariance`:
 
 ```bash
 python3 lilypond-music/scripts/dev/selftest.py --video \
@@ -44,6 +45,7 @@ tests say:
 | pitch tracking with `--literal-pitch` | same | median 1.1 cents, max 4.8 |
 | vowel onsets | selftest, both timing modes | every one exactly on a written onset |
 | vocoder resynthesis | `dev/vocoder_resynth_check.py` | 0.978 mel correlation, 1.7 cents |
+| every bank still qualifies | `dev/bank_check.py` on TIGER, CANARY, TRITON | "no problems" on each, and LIEE with only its missing English plugin reported |
 
 ## 2. What NOT to do
 
@@ -67,7 +69,7 @@ tests say:
 
 ## 3. Task A -- unit tests for the pure functions (highest value)
 
-**The problem.** There are 54 checks and all of them are end-to-end. A change
+**The problem.** There are 83 checks and all of them are end-to-end. A change
 to `syllabify()` or `_affine()` has no test that names it; it is caught only if
 it happens to move a number at the far end of a 1m20s pipeline. That is a slow,
 indirect feedback loop, and it is why the tests currently tell you *that*

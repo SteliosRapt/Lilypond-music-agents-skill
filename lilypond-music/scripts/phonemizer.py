@@ -179,8 +179,13 @@ def _main():
     import sys
     if len(sys.argv) < 3:
         sys.exit("usage: phonemizer.py <bank-or-plugin-path> WORD [WORD ...]")
-    where = sys.argv[1]
-    path = find_plugin(where) or where
+    where = Path(sys.argv[1]).expanduser()
+    # A path to a plugin is an instruction, not a hint: searching from it found
+    # whichever .dll in that folder happened to be biggest, which for CANARY's
+    # pack is the French one -- so asking about a specific plugin answered
+    # about a different plugin.
+    path = where if where.is_file() else (
+        find_plugin(where, bank_dictionary(where)[1]) or where)
     ph = Phonemizer.from_plugin(path)
     print(f"plugin: {path}")
     print(f"{len(ph.entries)} dictionary entries, {len(ph.phones)} phones, "
@@ -193,20 +198,122 @@ def _main():
         print(f"  {word:<16} {' '.join(out) if out else '-':<28} {source}")
 
 
-def find_plugin(bank_dir):
-    """Look for a phonemizer plugin shipped alongside a bank.
+def bank_dictionary(bank_dir):
+    """The bank's own word list and phoneme types, from its dsdict yamls.
+
+    Returns (symbols, entries, path, unreadable). Banks put these wherever they
+    like -- TIGER keeps none at the root and one copy per predictor folder, and
+    a multi-language bank ships eighteen -- so the whole tree is searched and an
+    explicitly English one preferred. A dsdict that does not parse is named in
+    `unreadable` rather than raised: LIEE ships one with a list item outdented
+    by a space, in a language nothing here is going to sing.
+    """
+    import yaml
+    here = Path(bank_dir).expanduser().resolve()
+    cands = sorted(here.rglob("dsdict*.yaml"))
+    preferred = ([p for p in cands if "-en." in p.name]
+                 + [p for p in cands if p.name == "dsdict.yaml"])
+    unreadable = []
+    for path in preferred + cands:
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (yaml.YAMLError, UnicodeError):
+            data = None
+        if not isinstance(data, dict):
+            if path.name not in unreadable:
+                unreadable.append(path.name)
+            continue
+        entries = {}
+        for e in data.get("entries") or []:
+            g = str(e.get("grapheme", "")).lower()
+            ph = e.get("phonemes") or e.get("phones") or []
+            if g and ph:
+                entries.setdefault(g, [str(x) for x in ph])
+        symbols = {str(s["symbol"]): str(s.get("type", "")).lower()
+                   for s in (data.get("symbols") or []) if s.get("symbol")}
+        if entries:
+            return symbols, entries, path, unreadable
+    return {}, {}, None, unreadable
+
+
+def plugin_candidates(bank_dir):
+    """Every plugin worth trying for a bank, nearest to it first.
 
     TIGER's download keeps the bank in `Voice Library/` and the plugin in
     `OpenUTAU Plugins/` beside it, so the plugin is usually a sibling of the
-    folder the bank was unzipped into rather than inside it.
+    folder the bank was unzipped into rather than inside it. Only the nearest
+    directory level that holds any plugin at all is searched: walking further
+    up would reach the whole voices directory of an unrelated bank, and on the
+    way to `/` it would reach the entire filesystem.
     """
     here = Path(bank_dir).expanduser().resolve()
     for base in [here] + list(here.parents)[:3]:
         dlls = sorted((p for p in base.rglob("*.dll") if p.stat().st_size > 100_000),
                       key=lambda p: -p.stat().st_size)
         if dlls:
-            return dlls[0]
-    return None
+            return dlls
+    return []
+
+
+def agreement(phonemizer, entries, sample=500):
+    """How often a plugin and the bank's own dictionary say the same thing.
+
+    Returned as (agreed, compared), or None when they share no words.
+
+    This is the test that tells a bank's English plugin from the French one
+    packed beside it, and nothing cheaper does. Phone sets do not distinguish
+    them: Millefeuille's French phones are a *subset* of CANARY's inventory, so
+    every phoneme it returns is one the acoustic model knows and every check
+    based on symbol membership passes while the bank sings English words with
+    French vowels. Comparing transcriptions is unambiguous -- against the three
+    tigermeat banks the matching plugin agrees on 68% of shared words and the
+    French one on 2%.
+
+    It is never 100%: a bank's own dsdict and its plugin's dictionary are
+    edited separately and genuinely differ on a minority of words.
+    """
+    shared = [w for w in entries if w in phonemizer.entries]
+    if not shared:
+        return None
+    shared = shared[:sample]
+    agreed = sum(1 for w in shared if list(phonemizer.entries[w]) == list(entries[w]))
+    return agreed, len(shared)
+
+
+# Below this, a plugin is answering about some other language: the wrong-plugin
+# cases measured (French, Filipino, and an English plugin against a bank using a
+# different English convention) all score under 0.1, the right ones near 0.7.
+AGREEMENT_FLOOR = 0.35
+# And below this many shared words the ratio is not evidence of anything: LIEE's
+# 208-word dsdict shares three words with the Polish plugin packed beside it, two
+# of which happen to match, which is not a reason to sing English in Polish.
+AGREEMENT_MINIMUM = 20
+
+
+def find_plugin(bank_dir, entries=None):
+    """The phonemizer plugin that belongs to this bank, if one does.
+
+    Picking the largest .dll nearby -- which is all there is to go on without
+    `entries` -- is wrong as soon as a machine holds more than one bank, or a
+    pack ships more than one language: CANARY's own pack carries a French
+    phonemizer larger than its English one, and LIEE's carries four plugins of
+    which none is English. Given the bank's own dictionary, every candidate is
+    scored against it and a bank with no matching plugin gets none, which
+    leaves the small built-in fallback rather than a fluent wrong language.
+    """
+    cands = plugin_candidates(bank_dir)
+    if not entries or len(cands) == 1:
+        return cands[0] if cands else None
+    best, best_score = None, 0.0
+    for path in cands:
+        try:
+            got = agreement(Phonemizer.from_plugin(path), entries)
+        except Exception:                             # noqa: BLE001 -- next one
+            continue
+        score = got[0] / got[1] if got and got[1] >= AGREEMENT_MINIMUM else 0.0
+        if score > best_score:
+            best, best_score = path, score
+    return best if best_score >= AGREEMENT_FLOOR else None
 
 
 if __name__ == "__main__":

@@ -41,11 +41,29 @@ frame" and is set everywhere the pipeline wants a prediction.
 model emits values around MIDI -2 -- roughly 4 Hz. Those frames are replaced
 with the written curve rather than passed to the vocoder.
 
+`variance.onnx` -> the four parameters are **inputs as well as outputs** in the
+banks that ship one: you hand it the curves as they stand and `retake` says
+which to re-predict, which is how OpenUtau keeps a hand-drawn energy curve while
+re-rolling breathiness. Flat zeros mean "no curve drawn" -- 0 is unity in the
+log domain, not silence.
+
+WHAT THE FOLDERS DISAGREE ABOUT
+-------------------------------
+Nothing above is uniform across banks, and each difference below is one a bank
+declared rather than one worth guessing at: the acceleration input is `speedup`
+or `steps` depending on the export (see `_Model.acceleration`), the phoneme
+table is line-numbered text or json with explicit ids (`_phoneme_table`), the
+hop size is the folder's own, and the speaker list is the folder's own and need
+not match the acoustic model's. A model that declares anything else is declined
+with its name recorded, never fed a guess.
+
     from predictors import load_predictors
     pred = load_predictors(bank_dir, voice_mode="tiger_fresh")
     pred.duration.predict(words)          # -> seconds per phoneme, per word
     pred.pitch.predict(...)               # -> MIDI numbers per frame
 """
+
+import json
 
 import numpy as np
 
@@ -92,14 +110,29 @@ class _Model:
         self.speakers = [str(s) for s in (self.cfg.get("speakers") or [])]
         self.embedding = self._embedding(voice_mode)
         self.unknown = set()
+        self.declined = None
 
     # -- loading ----------------------------------------------------------
 
     def _phoneme_table(self):
+        """This folder's phoneme table, in either format banks use.
+
+        Most banks write one phoneme per line and let the line number be the
+        token id. The multi-language exports (LIEE's `mm_*.phonemes.json`) ship
+        a json object with explicit ids instead, and those ids start at 1 --
+        reading that file as lines makes every phone unknown, which is not an
+        error anywhere: the model is simply handed a line of pure silence and
+        returns a confident prediction about it.
+        """
         rel = self.cfg.get("phonemes", "phonemes.txt")
         path = self.dir / str(rel)
         if not path.exists():
             raise FileNotFoundError(f"{self.name}: no phoneme table at {path}")
+        if path.suffix.lower() == ".json":
+            table = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(table, dict):
+                return {str(k): int(v) for k, v in table.items()}
+            return {str(p): i for i, p in enumerate(table)}
         lines = path.read_text(encoding="utf-8").splitlines()
         return {p.strip(): i for i, p in enumerate(lines) if p.strip()}
 
@@ -176,6 +209,38 @@ class _Model:
 
     def declared(self, key):
         return {i.name: i for i in self.session(key).get_inputs()}
+
+    def acceleration(self, steps):
+        """Both spellings of the acceleration input, for the model to pick from.
+
+        Two export conventions are in circulation. The older one declares
+        `speedup`; the `use_continuous_acceleration` export (CANARY v106,
+        TRITON v106, LIEE MM 2.8) declares `steps`. Offering only one is not a
+        graceful degradation -- an input the feed does not carry makes the whole
+        call decline in `refuses()` below, which is how CANARY's dspitch went
+        quietly unused while the run reported the folder as found.
+
+        The same number goes into either, which is exact for `steps` and
+        deliberately conservative for `speedup`: a stride of `steps` through the
+        1000-step schedule is a finer prediction than the caller asked for, not
+        a coarser one, and it is what these predictors have always been given.
+        """
+        n = np.array(max(1, int(steps)), np.int64)
+        return {"speedup": n, "steps": n}
+
+    def refuses(self, key, feed):
+        """True if this model declares an input the caller cannot supply.
+
+        Guessing at an unrecognised tensor produces confident nonsense rather
+        than an error, so the model is declined instead -- but the reason is
+        kept, because "present and not used" is worth a line of output and the
+        name of the missing input is the whole diagnosis for the next bank.
+        """
+        missing = sorted(set(self.declared(key)) - set(feed))
+        if missing:
+            self.declined = (f"{self.name} declares inputs this script does not "
+                             f"supply: {', '.join(missing)}")
+        return bool(missing)
 
     def run(self, key, feed, *outputs):
         """Run a model and pick outputs by name rather than by position.
@@ -305,14 +370,14 @@ class PitchPredictor(_Model):
             "pitch": base[None, :],
             "expr": np.full((1, n), float(expressiveness), np.float32),
             "retake": np.ones((1, n), bool),
-            "speedup": np.array(max(1, int(steps)), np.int64),
+            **self.acceleration(steps),
         }
         spk = self.spk(n)
         if spk is not None:
             feed["spk_embed"] = spk
-        declared = self.declared("pitch")
-        if set(declared) - set(feed):
+        if self.refuses("pitch", feed):
             return None
+        declared = self.declared("pitch")
         for name, meta in declared.items():
             if not len(meta.shape):                  # a true scalar, not [1]
                 feed[name] = np.array(feed[name]).reshape(())
@@ -401,15 +466,22 @@ class VariancePredictor(_Model):
             "ph_dur": np.array([ph_dur], np.int64),
             "pitch": resample_curve(base_midi, n)[None, :],
             "expr": np.ones((1, n), np.float32),
-            "speedup": np.array(max(1, int(steps)), np.int64),
             "retake": np.ones((1, n, max(len(predicted), 1)), bool),
+            **self.acceleration(steps),
+            # The parameters are inputs as well as outputs: the model is handed
+            # the curves as they stand and asked to re-predict the ones `retake`
+            # marks, which is how OpenUtau lets a user keep a hand-drawn energy
+            # curve while re-rolling breathiness. Nothing here draws curves, so
+            # they go in flat -- 0 in the log domain is unity, not silence --
+            # and `retake` is true everywhere, meaning predict all of it.
+            **{p: np.zeros((1, n), np.float32) for p in self.PARAMETERS},
         }
         spk = self.spk(n)
         if spk is not None:
             known["spk_embed"] = spk
-        declared = self.declared("variance")
-        if set(declared) - set(known):
+        if self.refuses("variance", known):
             return None
+        declared = self.declared("variance")
         for name, meta in declared.items():
             if not len(meta.shape):
                 known[name] = np.array(known[name]).reshape(())

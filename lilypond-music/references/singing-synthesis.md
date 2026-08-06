@@ -8,9 +8,11 @@ Contents:
 5. How the pitch curve is built
 6. Writing lyrics that sing well
 7. What is not modelled
-8. Troubleshooting
-9. Why not MusicXML conversion
-10. The other engines, and why English narrows the field
+8. What differs between banks
+9. Qualifying a bank you have not used before
+10. Troubleshooting
+11. Why not MusicXML conversion
+12. The other engines, and why English narrows the field
 
 ---
 
@@ -24,7 +26,7 @@ Contents:
 `sing.py` drives a **DiffSinger** voicebank directly through onnxruntime: the
 same ONNX files OpenUtau loads, minus the GUI. DiffSinger is the open singing
 synthesiser with a real English voicebank ecosystem, which is the only reason it
-is the one wired up here (see section 10).
+is the one wired up here (see section 12).
 
 The vocal is rendered as a separate wav aligned to beat 0, then mixed with the
 fluidsynth instrumental. Keeping it separate is deliberate: it can be balanced
@@ -41,6 +43,31 @@ made with it, and do not use one to imitate a real person's voice.
 
 ### Where to get one
 
+**Banks that have actually been run through this pipeline.** Each was
+downloaded from its own GitHub release and checked with
+`scripts/dev/bank_check.py` (section 9); the numbers in the last column are that
+tool's output. They are listed because they were tested, not because they are
+the best-sounding — that is a matter of taste and of the voice you want.
+
+| bank | release | size | what it exercises | result |
+|---|---|---|---|---|
+| **TIGER** v102 | `spicytigermeat/tiger_diffsinger`, tag `v102`, `TIGER_DS_v102_PACK.zip` | 540 MB | the classic export; 7 voice modes; `dsdur` + `dspitch` | everything used, notes tracked to a few cents |
+| **CANARY** v106 | `spicytigermeat/canary_diffsinger`, tag `v106`, `CANARY_DS_v106_PACK.zip` | 520 MB | continuous-acceleration export; 3 modes | same, once `dspitch` was taught the newer input name |
+| **TRITON** v106 | `spicytigermeat/triton_diffsinger`, tag `v106`, `TRITON_DS_v106_PACK.zip` | 518 MB | continuous acceleration; 4 modes | same |
+| **LIEE : Immortal Idol** MM 2.8 | `julieraptor/DIFFSINGER-LIEE-Immortal-Idol`, tag `MM2.8` | 283 MB | json phoneme tables, a real `dsvariance`, no voice modes, log-e mel, 18 language dictionaries | sings and times correctly; **no English phonemizer plugin ships with it**, so pronunciations are guessed unless you supply them |
+
+Download them with `curl -L -o bank.zip <release-asset-url>`; the release
+assets are plain files. What is inside is a pack rather than a bank: a `Voice
+Library/` folder holding another `.zip` (that one is the bank) and an `OpenUTAU
+Plugins/` folder next to it. Unzip both, keep them together, and point
+`--voice` at the directory that has `dsconfig.yaml` directly inside it.
+
+**Keep each bank in its own directory.** `sing.py` looks for the bank's
+phonemizer plugin in the directory containing the bank, so two banks unpacked
+side by side put four plugins in scope. It now picks by checking each candidate
+against the bank's own dictionary rather than by size, but the layout that
+cannot go wrong is one bank per folder.
+
 **The vocoder** — https://github.com/openvpi/vocoders/releases. Take the newest
 release's `.oudep` attachment; it is a zip, so rename and unzip it. The current
 line is PC-NSF-HiFiGAN (44.1 kHz, hop 512, 128 mel bins); the 2024.02
@@ -49,35 +76,45 @@ spectrograms and others on log-10 — the `mel_base` field in the two config fil
 says which, and `sing.py` converts between them, but only if the configs are
 honest about it.
 
-**A bank** — the DiffSinger Wiki's "Voicebanks supporting English" category
-(diffsinger.miraheze.org) is the working index. Known-good starting points are
-TIGER (github.com/spicytigermeat/tiger_diffsinger, CC BY-NC-ND + Commons
-Clause, multi-speaker with several voice modes) and its sibling CANARY. Banks
-ship as `.zip` or `.oudep` intended for drag-and-drop into OpenUtau; unzip
-instead and point `--voice` at the folder holding `dsconfig.yaml`.
+All four banks above ship their own vocoder in `dsvocoder/`, which is used
+automatically and is the one the bank was trained against; `--vocoder` is for
+banks that do not. Check the bank's own docs before substituting one — a few
+are trained against fish-diffusion's HiFi-GAN rather than openvpi's, and the
+wrong one produces noise rather than a worse voice.
 
-Check the bank's own docs for which vocoder it expects — a few are trained
-against fish-diffusion's HiFi-GAN rather than openvpi's, and the wrong one
-produces noise rather than a worse voice.
+**The wiki index is not currently usable from a script.** The DiffSinger Wiki's
+"Voicebanks supporting English" category (diffsinger.miraheze.org) is still the
+community index, but it now answers automated requests with a bot challenge, so
+it cannot be fetched from here — expect to open it in a browser, or to find
+banks through their authors' GitHub releases as above.
 
 You need two things:
 
-- **A bank** — a directory containing `dsconfig.yaml`, `acoustic.onnx`,
-  `phonemes.txt`, and a `dsdict*.yaml` dictionary. English banks are
-  distributed as `.zip` or `.oudep` files (an `.oudep` is a zip; rename it).
-  Look for banks advertising an ARPAbet or "ARPA+" phoneme set.
+- **A bank** — a directory containing `dsconfig.yaml`, an acoustic `.onnx`, a
+  phoneme table and a `dsdict*.yaml` dictionary. English banks are distributed
+  as `.zip` or `.oudep` files (an `.oudep` is a zip; rename it). Look for banks
+  advertising an ARPAbet or "ARPA+" phoneme set.
 - **A vocoder package** — usually `nsf_hifigan`, from openvpi's vocoder
-  releases. Put it in the bank as `vocoder/`, or pass `--vocoder`.
+  releases, or the `dsvocoder/` folder the bank already carries.
+- **A phonemizer plugin** for the bank's language, which is where a bank's
+  actual vocabulary lives — its `dsdict` is a few hundred to ten thousand
+  words, and the plugin carries 130,000. It is usually the `.dll` in the pack's
+  `OpenUTAU Plugins/` folder. Section 8 is about picking the right one.
+
+The minimal layout, and the four names every part of it also goes by:
 
 ```
 mybank/
-  dsconfig.yaml      acoustic: acoustic.onnx, phonemes: phonemes.txt, hop_size, sample_rate...
-  acoustic.onnx
-  phonemes.txt       one phoneme per line; the line number IS the token id
+  dsconfig.yaml      acoustic:, phonemes:, hop_size, sample_rate, speakers...
+  acoustic.onnx      or dsacoustic/<name>.onnx, wherever dsconfig points
+  phonemes.txt       one phoneme per line, line number = token id
+                     (or *.phonemes.json, an object of explicit ids)
   dsdict-en.yaml     symbols (phoneme -> type) + entries (word -> phonemes)
-  vocoder/
-    nsf_hifigan.onnx
-    vocoder.yaml     must agree with dsconfig on sample_rate, hop_size, mel bins, fmin/fmax
+  dsvocoder/         the bank's own vocoder, used in preference to --vocoder
+    tgm_hifigan.onnx
+    vocoder.yaml     must agree with dsconfig on sample_rate, hop_size,
+                     mel bins and the mel band edges
+  dsdur/ dspitch/ dsvariance/    optional predictors, each self-contained
 ```
 
 The sanity check the script performs first is that mel parameters match: an
@@ -127,18 +164,27 @@ Useful flags:
 | `--variance E,B,V,T` | offsets in dB on the variance curves (0 is unity, -96 silence) |
 | `--no-vibrato` | flat held notes on the fallback pitch path |
 | `--vocoder` | when the vocoder lives outside the bank |
+| `--phonemizer PATH` | the plugin to pronounce with, when the automatic choice is wrong or there is none nearby |
 
-A run prints which models it used:
+A run prints what it is singing with:
 
 ```
-  voice   Voice Library: 68 phonemes, 10075 dictionary entries, 44100 Hz
+  voice   tiger: 68 phonemes, 10075 dictionary entries, 44100 Hz
   modes   tiger_fresh, tiger_disco, ...  -> singing as tiger_fresh
+  words   diffs_en_tgm_alpha.dll, agreeing with the bank's own dictionary on 68% of 500 words
   models  acoustic + vocoder, plus dsdur, dspitch
 ```
 
-If a model is present and was not used, it says so and says what was used
-instead. That line is worth reading: everything else about a degraded render
-sounds plausible.
+If a model is present and was not used, it says so, says what was used instead,
+and names the input it could not supply. That line is worth reading: everything
+else about a degraded render sounds plausible.
+
+The `words` line is the other one to read. It names the phonemizer plugin that
+will pronounce anything outside the bank's own dictionary, and how far that
+plugin and the bank agree about the words they both know — high means the right
+plugin for this bank, low would mean a plugin for another language, and
+`no phonemizer plugin matches this bank` means every unlisted word is being
+spelled out by rule. Section 8 explains why that number exists.
 
 `sing.py` accepts either the `.ly` (it runs the extraction for you) or an
 existing `score-vocals.json`, which is the faster loop when you are only
@@ -237,7 +283,7 @@ The bank ships more than the acoustic model, and the pipeline uses all of it.
 | phonemizer plugin | yes | see `scripts/phonemizer.py` |
 | `dsdur` | yes | phoneme durations within a note; replaces the `CONSONANT_S` table |
 | `dspitch` | yes | expressive f0 around the written notes; replaces `f0_curve()` |
-| `dsvariance` | yes, where a bank has one | TIGER does not: it sets `use_energy_embed: false` and ships no `dsvariance/` |
+| `dsvariance` | yes, where a bank has one | verified against LIEE MM 2.8. TIGER, CANARY and TRITON have none: they set `use_energy_embed: false` and ship no `dsvariance/` |
 
 Each is optional, each falls back to the built-in approximation, and the run
 prints which ones it actually used. `--literal-timing` and `--literal-pitch`
@@ -285,7 +331,185 @@ exact printed onsets. For a score video, render the vocal with
 `sing.py --inspect` prints every model's ONNX interface, including the
 predictor folders, which is the way to check what a new bank actually declares.
 
-## 8. Troubleshooting
+## 8. What differs between banks
+
+"A DiffSinger bank" is not one format. The four banks in section 2 differ in
+every one of the following ways, and each difference was found by a bank
+failing quietly rather than loudly. This section is what to expect from a bank
+nobody here has run.
+
+### The acoustic model is exported one of two ways
+
+Older banks (TIGER v102) take an int64 **`speedup`**: the stride through a
+1000-step schedule. Newer ones, with `use_continuous_acceleration: true` in
+`dsconfig.yaml` (CANARY and TRITON v106, LIEE MM 2.8), take an int64
+**`steps`**: the number of steps to take. Both are handled, and so is the
+matching split in `depth`:
+
+| | classic | continuous |
+|---|---|---|
+| step count | `speedup`, a stride | `steps`, a count |
+| `depth` | int64, a step count | float, a fraction of the schedule |
+| `max_depth` means | 400 out of 1000 steps | 0.6 of the way back |
+
+`--depth` is clamped to whatever the bank declares as its `max_depth`, because
+a model exported at 0.6 was never trained to denoise from further back than
+that. A bank with no `depth` input at all (LIEE) has no shallow diffusion and
+the flag does nothing.
+
+The same split runs through the predictors, and it is where it did real damage:
+a `dspitch` that asks for `steps` and is offered only `speedup` declines
+outright, so CANARY's pitch model was found, reported as present, and never
+called. Both names are offered now, and a model that still declines names the
+input it wanted.
+
+### Phoneme tables come in two formats
+
+`phonemes.txt` is one phoneme per line and the line number is the token id.
+Multi-language banks (LIEE) ship `*.phonemes.json`, an object mapping phoneme
+to id — and the ids start at 1, so counting lines gives every phone the wrong
+token. Both the bank and each predictor folder can use either.
+
+### The dictionary is not the vocabulary
+
+A bank's `dsdict*.yaml` is a small word list: about 10,000 words for the
+tigermeat banks, **208** for LIEE's English. Everything else is expected to
+come from an OpenUtau phonemizer plugin, a `.dll` in the pack whose embedded
+zip holds a large dictionary — 133,000 words in the tigermeat English plugin,
+245,000 in the French one — and a neural G2P for the rest (see
+`scripts/phonemizer.py`). Banks also ship dictionaries for languages they were
+never trained on, sometimes empty, sometimes not valid yaml — LIEE's
+`dsdict-zh-yue.yaml` has a list item outdented by one space. Unparsable ones
+are named and skipped rather than fatal.
+
+### The plugin has to be the one for the bank's language
+
+This is the trap that costs the most and shows the least. A pack can carry
+several plugins: CANARY's carries an English one and a French one, LIEE's
+carries Polish, Filipino, Vietnamese and French and no English at all. Picking
+the largest `.dll` nearby — which is all a file listing supports — picks French
+for CANARY, and then:
+
+```
+lanterns    l en sh ae r n p     G2P (a guess)      # the French plugin
+lanterns    l ae n t er n z      dictionary         # the English one
+```
+
+Nothing downstream objects, because the French phone set is a *subset* of
+CANARY's inventory: every phoneme it returns is one the acoustic model knows.
+The bank sings, fluently, in the wrong language's phonology.
+
+So the plugin is chosen by asking each candidate about words the bank's own
+dictionary already has an answer for. The matching plugin agrees with all three
+tigermeat banks on 68% of 500 shared words; the French one agrees on 2%, the
+Filipino one on 0%. Below 35% agreement, or fewer than 20 words in common, no
+plugin is used at all — a bank with no plugin falls back to its dsdict plus
+letter-to-sound rules, which is worse pronunciation but not another language.
+`--phonemizer PATH` overrides the choice, and
+
+```bash
+python3 scripts/phonemizer.py /path/to/plugin.dll lanterns drift quiet
+```
+
+answers a specific plugin's opinion without rendering anything.
+
+A plugin is not tied to the bank it shipped with: any plugin whose phone set
+and conventions match will do, which is what the agreement number is measuring.
+It is worth trying for a bank with a small dictionary — but check the number
+rather than assuming. The English plugin from the TIGER pack agrees with LIEE
+on 1 word out of 18, because LIEE transcribes English differently (`n aa dx`
+for "not", a flap where the other banks write `t`), so it is not a substitute
+there.
+
+### Voice modes are per model, not per bank
+
+`dsconfig.yaml` lists `speakers:` with a `.emb` file each, and `--voice-mode`
+picks one. The predictor folders keep their own lists and they do not have to
+match: CANARY's acoustic model has three modes and its `dspitch` exactly one.
+The mode is matched by name where the folder has it and the folder's first
+entry is used where it does not.
+
+### The vocoder may be inside, named, or missing
+
+All four banks tested ship `dsvocoder/`, which is preferred over anything
+passed with `--vocoder`. LIEE also names an external dependency
+(`vocoder: pc_nsf_hifigan_44.1k_hop512_128bin_2025.02`) and ships that same
+vocoder inside. What must match is the mel definition — sample rate, hop, bin
+count and band edges — and it is checked before anything is rendered, allowing
+for the two spellings in circulation (`mel_fmin`/`mel_fmax` in openvpi's
+packages, `fmin`/`fmax` in banks' own). The log base is *converted* rather than
+required to match, so a log-10 bank and a log-e vocoder are compatible.
+
+Substituting one that does match is safe, and measurably so: TIGER (log-10)
+rendered through openvpi's PC-NSF-HiFiGAN (log-e) tracks the written notes
+exactly as it does through its own vocoder, 0.7 dB quieter, with mel spectra
+correlating at 0.907 — against 0.905 for two renders through TIGER's *own*
+vocoder, because diffusion is stochastic and no two takes are identical. The
+swap is indistinguishable from rendering twice. CANARY and LIEE were checked
+the same way and behave the same. What is not safe is a vocoder whose mel
+definition differs, and that is what the check exists for.
+
+## 9. Qualifying a bank you have not used before
+
+```bash
+python3 scripts/dev/bank_check.py ~/voices/mybank
+```
+
+Two or three minutes. It renders `scripts/dev/bank-check.ly` twice, and reports
+what the bank declares, which models the pipeline actually fed, where the words
+came from, and three measurements: the audio's peak and RMS and whether it
+contains NaN, how far each note's body sits from the written pitch, and whether
+every vowel still starts on its written onset. Its exit status is non-zero if
+anything is out of bounds. CANARY v106, in full:
+
+```
+  declares  116 phonemes, 10075 dsdict words, 44100 Hz, hop 512, mel base 10
+            acoustic wants: depth, durations, f0, gender, spk_embed, steps, tokens, velocity
+            acceleration by steps (continuous acceleration), depth as a fraction capped at 0.6
+            vocoder tgm_hifigan_v105.onnx: 128 bins, 44100 Hz, hop 512, mel base 10
+            modes: canary_arc, canary_spark, canary_voltage
+
+  singing it
+    words   diffs_en_tgm_alpha.dll, agreeing with the bank's own dictionary on 68% of 500 words
+    models  acoustic + vocoder, plus dsdur, dspitch
+
+  sounds    23.3s, peak -3.9 dBFS, rms -17.1 dBFS, 0 NaN samples
+  sings     as sung: median 1 cents from the written notes, worst 11, 20/20 notes tracked
+  sings     --literal-pitch: median 1 cents from the written notes, worst 9, 20/20 notes tracked
+  places    every vowel starts on its written onset
+
+  no problems: this bank works with the pipeline as documented.
+```
+
+What the output means:
+
+- **`sings --literal-pitch: median N cents`** is the pipeline's own accuracy
+  with the model's expression turned off, and it should be a couple of cents.
+  Tens of cents means the bank and the score disagree about tuning; hundreds
+  means an octave or a transposition problem.
+- **`sings as sung`** should be close to it in the note *bodies* — the
+  difference between the two is mostly at the edges, which is where a singer
+  scoops and where the measurement deliberately does not look.
+- **`words ... no phonemizer plugin matches this bank`** means English is being
+  spelled out by rule. The bank still sings; it just does not know how to
+  pronounce anything outside its own dictionary (section 8).
+- **`a model was present and declined`** with the input it wanted is the line
+  that matters most on an unfamiliar bank: it is the one failure that costs
+  quality without costing correctness, and it is inaudible.
+- **NaN samples, or an RMS near silence**, is a mel mismatch. Check the
+  vocoder before anything else.
+
+`sing.py --inspect` is the shorter version — every config and every model's
+ONNX interface, no rendering — and is the thing to read when `bank_check.py`
+reports an input nobody supplies.
+
+`scripts/dev/selftest.py --voice ~/voices/mybank --vocoder ...` asks the other
+question: whether the *pipeline* still behaves with that bank in place. It runs
+the same checks it runs against its stub banks, and it builds those stubs in
+both export conventions, so a change that quietly drops support for one of them
+fails there rather than on a user's bank.
+
+## 10. Troubleshooting
 
 **"no lyrics found in this score".** The line needs a *named* voice:
 `\new Voice = "singer" \voicePart` with `\new Lyrics \lyricsto "singer"`.
@@ -295,6 +519,30 @@ multiple sung staves be told apart.
 **"wants inputs this script does not supply".** The bank's acoustic model
 declares an input beyond the documented contract. That bank needs OpenUtau; the
 message lists what was missing.
+
+**"dspitch is present but declined this line".** The model was found and not
+called, and the line under it names the input it asked for. Two names are
+already handled either way round (`steps` and `speedup`, section 8); anything
+else is a bank exported by a toolchain generation this pipeline has not met.
+The render is not wrong, it is just the fallback: written pitch with synthetic
+portamento. `sing.py --inspect` shows the full interface.
+
+**A word is sung fluently and is not the word you wrote.** Look at the `words`
+line. A low agreement percentage, or a plugin whose name mentions another
+language, means English is being pronounced by that language's rules — see
+section 8. Ask the plugin directly with `scripts/phonemizer.py`, and pass
+`--phonemizer` to override the choice.
+
+**"no phonemizer plugin matches this bank".** Nothing near the bank agrees with
+its own dictionary, so unlisted words are spelled out by rule. Either the
+plugin was left behind when the bank was unpacked — it lives in the pack's
+`OpenUTAU Plugins/` folder, beside `Voice Library/` — or the bank ships none
+for your language, as LIEE does for English. Respell the words in
+`\lyricmode`, or add them to a copy of the bank's `dsdict-en.yaml`.
+
+**"<name>.yaml is not valid yaml and was skipped".** A hand-edited dictionary
+in the bank, usually for a language you are not singing. Harmless unless it is
+the one you needed.
 
 **"voice mode X not in this bank".** Multi-speaker banks list their modes in
 `dsconfig.yaml` under `speakers:`, each with a matching `<name>.emb` beside it.
@@ -333,7 +581,7 @@ gets scaled into whatever gap exists. Shorten the previous note or re-hyphenate.
 size, mel bins and fmin/fmax, but a vocoder trained with a different mel scale
 or base can still slip through if the config files lie about it.
 
-## 9. Why not MusicXML conversion
+## 11. Why not MusicXML conversion
 
 The obvious route is `.ly -> MusicXML -> singing synthesiser`, since MusicXML
 is what NNSVS and Sinsy read. It does not survive contact with real vocal
@@ -349,7 +597,7 @@ part, one voice, syllables, ties, slurs for melismata. It is what to hand to
 NNSVS, ESPnet or MuseScore, and it is generated from the same table `sing.py`
 uses, so the two can never disagree about what is being sung.
 
-## 10. The other engines, and why English narrows the field
+## 12. The other engines, and why English narrows the field
 
 | Engine | Input | Voices | Headless |
 |---|---|---|---|
