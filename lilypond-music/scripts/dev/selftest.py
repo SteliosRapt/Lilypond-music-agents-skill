@@ -26,6 +26,7 @@ Exit status is 0 only if every check passed.
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -242,6 +243,23 @@ def test_singing(work, source, voice, vocoder):
         check("the preview covers the whole line", wav_seconds(preview) > 15,
               f"{wav_seconds(preview):.1f}s")
 
+    # `--preview` is the one path that must work on a machine with none of the
+    # singing dependencies, which is what makes every onnxruntime import in
+    # this tree lazy. Nothing else notices when one stops being.
+    blocker = work / "no-onnx"
+    blocker.mkdir(parents=True, exist_ok=True)
+    (blocker / "onnxruntime.py").write_text(
+        'raise ImportError("blocked by selftest.py")\n')
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(blocker)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+    proc = run([sys.executable, SCRIPTS / "sing.py", vocals, "--preview",
+                "-o", work / "sing-bare"], env=env)
+    check("--preview still runs with onnxruntime unimportable",
+          proc.returncode == 0,
+          (proc.stderr or proc.stdout).strip().splitlines()[-1][:70]
+          if proc.returncode else "")
+
     proc = run([sys.executable, SCRIPTS / "sing.py", vocals, "--voice", voice,
                 "-o", work / "sing", "--steps", "4"]
                + (["--vocoder", vocoder] if vocoder else []))
@@ -253,13 +271,14 @@ def test_singing(work, source, voice, vocoder):
     check("dspitch was used", "dspitch" in proc.stdout)
     check("no model was found and then silently skipped",
           "declined this line" not in proc.stdout,
-          [l for l in proc.stdout.splitlines() if "declined" in l][:1])
+          [out for out in proc.stdout.splitlines() if "declined" in out][:1])
     # Where the words came from is not decoration: a bank whose phonemizer
     # plugin was not found, or was found and belongs to another language, sings
     # fluent nonsense and nothing else in the output says so.
     check("the run says where pronunciations came from",
           "  words   " in proc.stdout,
-          [l for l in proc.stdout.splitlines() if l.startswith("  words")][:1])
+          [out for out in proc.stdout.splitlines()
+           if out.startswith("  words")][:1])
 
     proc = run([sys.executable, SCRIPTS / "sing.py", vocals, "--voice", voice,
                 "-o", work / "literal", "--steps", "4",
@@ -304,7 +323,8 @@ def test_ensemble(work, voices, vocoder):
     check("it reports what each bank used", "models  acoustic" in proc.stdout)
     check("levels are measured, not assumed", "dBFS while singing" in proc.stdout)
     check("--gain and --pan reach the mix", "-2" in proc.stdout and "+0.40" in proc.stdout,
-          [l for l in proc.stdout.splitlines() if "dBFS while singing" in l][:2])
+          [out for out in proc.stdout.splitlines()
+           if "dBFS while singing" in out][:2])
 
     for flag, expect, what in (
             (["--voice", "nosuchpart=" + str(voices[0])], "no part named",

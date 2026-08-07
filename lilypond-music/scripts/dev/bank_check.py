@@ -189,7 +189,7 @@ def main():
     print(f"bank: {bank}")
     tmp = Path(tempfile.mkdtemp(prefix="bank-check-"))
 
-    voice = declared(bank, args.vocoder)
+    declared(bank, args.vocoder)
 
     print("\n  singing it")
     proc, wav = sing(args.score, bank, args.vocoder, tmp / "sung", args.steps)

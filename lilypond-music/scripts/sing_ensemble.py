@@ -130,9 +130,9 @@ def render_part(args, vocals, part, line, bank, outdir):
     if not wavs:
         return None, [], [f"{part}: sing.py wrote no wav"]
     report = [m.group(0).strip() for m in
-              (REPORT.match(l) for l in proc.stdout.splitlines()) if m]
-    warnings = [l.strip() for l in proc.stdout.splitlines()
-                if any(t in l for t in TROUBLE)]
+              (REPORT.match(out) for out in proc.stdout.splitlines()) if m]
+    warnings = [out.strip() for out in proc.stdout.splitlines()
+                if any(t in out for t in TROUBLE)]
     return wavs[0], report, warnings
 
 
@@ -261,14 +261,14 @@ def main():
     outdir = Path(args.outdir).expanduser().resolve()
     (outdir / "stems").mkdir(parents=True, exist_ok=True)
     doc, vocals = extract(args.score, outdir)
-    catalogue = [(l["line"], l["voice"]) for l in doc["lines"]]
+    catalogue = [(entry["line"], entry["voice"]) for entry in doc["lines"]]
     # A named voice usually means one line, but a voice with two verses under
     # it means two, and then the name alone does not say which. Line numbers
     # are always unambiguous, so both are accepted as the key.
     by_voice = {}
     for number, voice in catalogue:
         by_voice.setdefault(voice, []).append(number)
-    listing = ", ".join(f"{v} (line {n})" for n, v in catalogue)
+    listing = ", ".join(f"{name} (line {n})" for n, name in catalogue)
     if not args.voice:
         die(f"no --voice given. This score's parts are: {listing}"
             f"\n  e.g. --voice {catalogue[0][1]}=~/voices/tiger")

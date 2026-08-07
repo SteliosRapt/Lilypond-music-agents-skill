@@ -64,7 +64,7 @@ def main():
           f"| scale {cfg.get('mel_scale')}")
 
     doc = json.loads(Path(args.vocals).read_text())
-    lines = {l["line"]: l for l in doc["lines"]}
+    lines = {line["line"]: line for line in doc["lines"]}
     if args.line not in lines:
         sys.exit(f"no lyric line {args.line} (found: {sorted(lines)})")
     line = lines[args.line]

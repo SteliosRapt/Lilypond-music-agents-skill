@@ -33,6 +33,16 @@ class SkillError(Exception):
     """Something the caller can fix, described in a sentence they can act on."""
 
 
+def die(msg):
+    """Stop with a message the caller can act on.
+
+    A named function rather than a bare `raise` at forty call sites, because
+    that is the idiom these scripts already read in, and because it puts one
+    place to look when asking what "stopping" means here.
+    """
+    raise SkillError(msg)
+
+
 def cli(entry, program=""):
     """Run an entry point, turning `SkillError` into a message and exit 1.
 

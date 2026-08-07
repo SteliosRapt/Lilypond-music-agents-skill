@@ -317,9 +317,11 @@ def synthesize(midi, work, out_mp3, soundfont=None, gain=1.0, reverb=True, tail=
         wav = os.path.join(work, "raw.wav")
         render_midi(midi, wav)
         longest = max(duration_of(wav), duration_of(vocal))
+        master = ",".join(master_chain(longest, reverb, tail, True, master_eq,
+                                       band))
         graph = [f"[1:a]{','.join(list(vocal_eq) + [f'volume={vocal_gain:.2f}dB'])}[v]",
                  "[0:a][v]amix=inputs=2:normalize=0[sum]",
-                 f"[sum]{','.join(master_chain(longest, reverb, tail, True, master_eq, band))}[out]"]
+                 f"[sum]{master}[out]"]
         run(["ffmpeg", "-y", "-i", wav, "-i", vocal,
              "-filter_complex", ";".join(graph), "-map", "[out]",
              "-c:a", "libmp3lame", "-b:a", "192k", out_mp3])
@@ -355,8 +357,9 @@ def synthesize(midi, work, out_mp3, soundfont=None, gain=1.0, reverb=True, tail=
         sung = list(vocal_eq) + [f"volume={vocal_gain:.2f}dB"]
         graph.append(f"[{len(stems)}:a]{','.join(sung)}[sung]")
         labels.append("[sung]")
+    master = ",".join(master_chain(longest, reverb, tail, True, master_eq, band))
     graph.append(f"{''.join(labels)}amix=inputs={len(labels)}:normalize=0[sum]")
-    graph.append(f"[sum]{','.join(master_chain(longest, reverb, tail, True, master_eq, band))}[out]")
+    graph.append(f"[sum]{master}[out]")
     cmd += ["-filter_complex", ";".join(graph), "-map", "[out]",
             "-c:a", "libmp3lame", "-b:a", "192k", out_mp3]
     run(cmd)
@@ -657,6 +660,124 @@ def perform_hairpins(art, work, depth):
 
 
 # --------------------------------------------------------------------------
+# the three stages, so main() reads as the sequence it is
+# --------------------------------------------------------------------------
+
+def parse_band(spec):
+    """`--band LOW:HIGH` to a pair of frequencies in Hz."""
+    try:
+        low, high = (float(v) for v in spec.split(":"))
+    except ValueError:
+        raise SkillError(f"--band wants LOW:HIGH in Hz, got {spec!r}") from None
+    if not 0 < low < high:
+        raise SkillError(f"--band: {low:.0f} Hz is not below {high:.0f} Hz")
+    return low, high
+
+
+def stage_chain(spec):
+    """A bare `--master-eq`/`--vocal-eq` spec (no part key) to its filters."""
+    return [f for s in (spec or "").split("|") if s.strip()
+            for f in eq_stage(s.strip())]
+
+
+def report_mix(parts, mix, eq, master_eq, args, vocal_eq):
+    """Print only what was actually changed, part by part.
+
+    Listing every part at 0 dB would bury the two lines that matter, and these
+    are the lines to check against what you asked for.
+    """
+    if args.vocal:
+        print(f"  sung line: {os.path.basename(args.vocal)} "
+              f"({args.vocal_gain:+.1f} dB)"
+              + (f" eq {args.vocal_eq}" if vocal_eq else ""))
+    for p in parts:
+        gain, pan = (mix or {}).get(p["index"], (0.0, 0.0))
+        tone = (eq or {}).get(p["index"])
+        if gain or pan or tone:
+            where = f" pan {pan:+.1f}" if pan else ""
+            level = "muted" if gain < -100 else f"{gain:+.1f} dB"
+            shaped = f"  [{', '.join(tone)}]" if tone else ""
+            print(f"  {p['name']:<18} {level}{where}{shaped}")
+    if master_eq:
+        print(f"  master eq          [{', '.join(master_eq)}]")
+
+
+def make_audio(args, art, parts, work, out_mp3):
+    """Everything between the MIDI and the mastered mp3. Returns its duration."""
+    mix = parse_mix(args.mix, parts) if args.mix else None
+    eq = parse_eq(args.eq, parts) if args.eq else None
+    master_eq = stage_chain(args.master_eq)
+    vocal_eq = stage_chain(args.vocal_eq)
+    band = parse_band(args.band)
+    if args.vocal and not os.path.exists(args.vocal):
+        raise SkillError(f"--vocal file not found: {args.vocal}")
+
+    print(f"synthesising audio ({len(parts)} parts, mixed)" if mix or eq
+          else "synthesising audio ...")
+    audio_dur = synthesize(art["midi"], work, out_mp3, args.soundfont,
+                           args.gain, not args.no_reverb, mix=mix, parts=parts,
+                           vocal=args.vocal, vocal_gain=args.vocal_gain,
+                           eq=eq, master_eq=master_eq, vocal_eq=vocal_eq,
+                           band=band)
+    report_mix(parts, mix, eq, master_eq, args, vocal_eq)
+    print(f"  {audio_dur:.1f}s")
+    return audio_dur
+
+
+def read_layout(args, art):
+    """Page geometry, the bar timeline and the note-level anchors, with a report."""
+    print("reading geometry and timeline ...")
+    pages = analyze_pages(art["analysis"])
+    for pg, disp in zip(pages, art["display"]):
+        pg["display"] = disp
+    bars = bar_timeline(art["midi"], args.pickup)
+    printed = sum(p["bar_count"] for p in pages)
+    print(f"  {printed} bars printed, {len(bars)} bars in MIDI")
+    if printed != len(bars):
+        print("  WARNING: counts disagree -- a pickup bar (--pickup), a repeat, or a\n"
+              "  mid-score time signature change is the usual cause. Animation may drift.")
+
+    anchors = None
+    if args.playhead_mode == "notes" and art.get("columns"):
+        cols = parse_columns(art["columns"])
+        anchors, diag = note_anchors(cols, pages, bars, moment_converter(art["midi"]))
+        if diag.get("error"):
+            print(f"  note anchors unavailable ({diag['error']}); "
+                  "playhead falls back to one sweep per bar")
+        else:
+            onsets = sum(len(a) - 1 for a in anchors if a)
+            print(f"  {onsets} printed onsets anchored across "
+                  f"{diag['mapped']}/{diag['systems']} systems "
+                  f"(worst fit residual {diag['max_residual']:.1f}px)")
+    return pages, bars, anchors
+
+
+def hex2rgb(h):
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def make_video(args, art, audio_path, audio_dur, work, out_mp4):
+    """The animation, and the check that it really is in sync."""
+    pages, bars, anchors = read_layout(args, art)
+    width, height = (int(v) for v in args.size.lower().split("x"))
+    frame = Frame(art["display"], width, height)
+
+    print("rendering video ...")
+    track = playhead_track(pages, bars, frame, anchors)
+    bar_w = build_video(pages, bars, frame, work, out_mp4, audio_path, audio_dur,
+                        args.fps, hex2rgb(args.playhead), args.highlight,
+                        hex2rgb(args.bg), track)
+
+    with open(os.path.join(work, "layout.json"), "w") as fh:
+        json.dump({"bars": bars,
+                   "pages": [{k: v for k, v in p.items() if k != "display"}
+                             for p in pages]}, fh, indent=1)
+
+    if args.verify:
+        verify(out_mp4, track, bars, args.verify, bar_w, args.fps, work=work)
+
+
+# --------------------------------------------------------------------------
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
@@ -744,44 +865,8 @@ def main():
 
     audio_path, audio_dur = None, None
     if not args.no_audio and art["midi"]:
-        mix = parse_mix(args.mix, parts) if args.mix else None
-        eq = parse_eq(args.eq, parts) if args.eq else None
-        master_eq = [f for s in (args.master_eq or "").split("|") if s.strip()
-                     for f in eq_stage(s.strip())]
-        vocal_eq = [f for s in (args.vocal_eq or "").split("|") if s.strip()
-                    for f in eq_stage(s.strip())]
-        try:
-            low, high = (float(v) for v in args.band.split(":"))
-        except ValueError:
-            raise SkillError(
-                f"--band wants LOW:HIGH in Hz, got {args.band!r}") from None
-        if not 0 < low < high:
-            raise SkillError(f"--band: {low:.0f} Hz is not below {high:.0f} Hz")
-        print(f"synthesising audio ({len(parts)} parts, mixed)" if mix or eq
-              else "synthesising audio ...")
         audio_path = os.path.join(outdir, f"{stem}.mp3")
-        if args.vocal and not os.path.exists(args.vocal):
-            raise SkillError(f"--vocal file not found: {args.vocal}")
-        audio_dur = synthesize(art["midi"], work, audio_path, args.soundfont,
-                               args.gain, not args.no_reverb, mix=mix, parts=parts,
-                               vocal=args.vocal, vocal_gain=args.vocal_gain,
-                               eq=eq, master_eq=master_eq, vocal_eq=vocal_eq,
-                               band=(low, high))
-        if args.vocal:
-            print(f"  sung line: {os.path.basename(args.vocal)} "
-                  f"({args.vocal_gain:+.1f} dB)"
-                  + (f" eq {args.vocal_eq}" if vocal_eq else ""))
-        for p in parts:
-            g, pan = (mix or {}).get(p["index"], (0.0, 0.0))
-            tone = (eq or {}).get(p["index"])
-            if g or pan or tone:
-                where = f" pan {pan:+.1f}" if pan else ""
-                level = "muted" if g < -100 else f"{g:+.1f} dB"
-                shaped = f"  [{', '.join(tone)}]" if tone else ""
-                print(f"  {p['name']:<18} {level}{where}{shaped}")
-        if master_eq:
-            print(f"  master eq          [{', '.join(master_eq)}]")
-        print(f"  {audio_dur:.1f}s")
+        audio_dur = make_audio(args, art, parts, work, audio_path)
 
     if args.no_video:
         print("done (no video requested)")
@@ -792,49 +877,8 @@ def main():
         print("done (no audio, so no video)")
         return
 
-    print("reading geometry and timeline ...")
-    pages = analyze_pages(art["analysis"])
-    for pg, disp in zip(pages, art["display"]):
-        pg["display"] = disp
-    bars = bar_timeline(art["midi"], args.pickup)
-    printed = sum(p["bar_count"] for p in pages)
-    print(f"  {printed} bars printed, {len(bars)} bars in MIDI")
-    if printed != len(bars):
-        print("  WARNING: counts disagree -- a pickup bar (--pickup), a repeat, or a\n"
-              "  mid-score time signature change is the usual cause. Animation may drift.")
-
-    anchors = None
-    if args.playhead_mode == "notes" and art.get("columns"):
-        cols = parse_columns(art["columns"])
-        anchors, diag = note_anchors(cols, pages, bars, moment_converter(art["midi"]))
-        if diag.get("error"):
-            print(f"  note anchors unavailable ({diag['error']}); "
-                  "playhead falls back to one sweep per bar")
-        else:
-            onsets = sum(len(a) - 1 for a in anchors if a)
-            print(f"  {onsets} printed onsets anchored across "
-                  f"{diag['mapped']}/{diag['systems']} systems "
-                  f"(worst fit residual {diag['max_residual']:.1f}px)")
-
-    width, height = (int(v) for v in args.size.lower().split("x"))
-    frame = Frame(art["display"], width, height)
-    hex2rgb = lambda h: tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))  # noqa: E731
-
-    print("rendering video ...")
-    out_mp4 = os.path.join(outdir, f"{stem}.mp4")
-    track = playhead_track(pages, bars, frame, anchors)
-    bar_w = build_video(pages, bars, frame, work, out_mp4, audio_path, audio_dur,
-                        args.fps, hex2rgb(args.playhead), args.highlight,
-                        hex2rgb(args.bg), track)
-
-    with open(os.path.join(work, "layout.json"), "w") as fh:
-        json.dump({"bars": bars,
-                   "pages": [{k: v for k, v in p.items() if k != "display"}
-                             for p in pages]}, fh, indent=1)
-
-    if args.verify:
-        verify(out_mp4, track, bars, args.verify, bar_w, args.fps, work=work)
-
+    make_video(args, art, audio_path, audio_dur, work,
+               os.path.join(outdir, f"{stem}.mp4"))
     if not args.keep_temp:
         shutil.rmtree(work, ignore_errors=True)
     print(f"\nwrote {outdir}/{stem}.pdf .midi .mp3 .mp4")

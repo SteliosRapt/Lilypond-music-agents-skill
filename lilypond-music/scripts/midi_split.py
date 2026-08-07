@@ -164,7 +164,8 @@ def describe(parts, held_threshold=4.0):
              "  -- ----------------------  -----  ----  --------  -------  ----  -----"]
     flat, held = [], []
     for p in parts:
-        sound = "drum kit" if p["channel"] == 9 else names.get(p["program"], f"program {p['program']}")
+        sound = ("drum kit" if p["channel"] == 9 else
+                 names.get(p["program"], f"program {p['program']}"))
         vels = p.get("velocities") or []
         distinct = len(set(vels))
         span = f"{min(vels)}-{max(vels)}" if vels else "-"
@@ -190,8 +191,9 @@ def describe(parts, held_threshold=4.0):
         lines.append("")
         lines.append(f"  mostly sustained: {', '.join(held)}")
         lines.append("  -> over half of these parts' sounding time is inside notes of")
-        lines.append(f"     {held_threshold:.0f} quarters or more. Velocity cannot change while a note")
-        lines.append("     sounds, so hairpins across them cannot be performed as velocity.")
+        lines.append(f"     {held_threshold:.0f} quarters or more. Velocity cannot change")
+        lines.append("     while a note sounds, so hairpins across them cannot be")
+        lines.append("     performed as velocity.")
         lines.append("     render.py rewrites those as CC11 expression ramps automatically;")
         lines.append("     --no-swell disables it (audio-and-midi.md section 4).")
     return "\n".join(lines)
