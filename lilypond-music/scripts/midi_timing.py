@@ -7,23 +7,18 @@ playhead silently desynchronises.  LilyPond already writes tempo and time
 signature meta events into its MIDI output, so read the timeline back from the
 artefact instead of restating it.
 
-Pure standard library -- no mido/pretty_midi dependency.
+Pure standard library -- no mido/pretty_midi dependency. The chunk list and the
+variable-length quantities come from `smf.py`, shared with the other two modules
+that read a MIDI file; the event walk below is this module's own, because a
+tempo map is not what either of them is looking for.
 
     from midi_timing import bar_timeline
     bars = bar_timeline("score.midi")      # [(bar_number, start_sec, dur_sec), ...]
 """
 
-import struct
+from pathlib import Path
 
-
-def _read_varlen(data, i):
-    val = 0
-    while True:
-        b = data[i]
-        i += 1
-        val = (val << 7) | (b & 0x7F)
-        if not b & 0x80:
-            return val, i
+import smf
 
 
 def parse_midi(path):
@@ -33,27 +28,14 @@ def parse_midi(path):
     timesig_events : [(tick, numerator, denominator), ...] sorted
     end_tick       : tick of the last event in the file
     """
-    data = open(path, "rb").read()
-    if data[:4] != b"MThd":
-        raise ValueError(f"{path} is not a Standard MIDI File")
-    _fmt, _ntrks, division = struct.unpack(">HHH", data[8:14])
-    if division & 0x8000:
-        raise ValueError("SMPTE time division is not supported")
+    data = Path(path).read_bytes()
+    _fmt, _ntrks, division = smf.header(data, str(path))
 
     tempos, timesigs, end_tick = [], [], 0
-    pos = 14
-    while pos < len(data) - 8:
-        chunk_id = data[pos:pos + 4]
-        length = struct.unpack(">I", data[pos + 4:pos + 8])[0]
-        body_start = pos + 8
-        body_end = body_start + length
-        pos = body_end
-        if chunk_id != b"MTrk":
-            continue
-
+    for _kind, body_start, body_end, _blob in smf.tracks(data):
         i, tick, status = body_start, 0, None
         while i < body_end:
-            delta, i = _read_varlen(data, i)
+            delta, i = smf.read_varlen(data, i)
             tick += delta
             b = data[i]
             if b & 0x80:
@@ -64,7 +46,7 @@ def parse_midi(path):
             if status == 0xFF:                      # meta event
                 meta_type = data[i]
                 i += 1
-                length_, i = _read_varlen(data, i)
+                length_, i = smf.read_varlen(data, i)
                 payload = data[i:i + length_]
                 i += length_
                 if meta_type == 0x51 and length_ == 3:
@@ -72,7 +54,7 @@ def parse_midi(path):
                 elif meta_type == 0x58 and length_ >= 2:
                     timesigs.append((tick, payload[0], 2 ** payload[1]))
             elif status in (0xF0, 0xF7):            # sysex
-                length_, i = _read_varlen(data, i)
+                length_, i = smf.read_varlen(data, i)
                 i += length_
             else:                                   # channel voice message
                 high = status & 0xF0

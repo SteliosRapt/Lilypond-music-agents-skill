@@ -25,7 +25,8 @@ status, channel assignments and the channel-10 drum mapping all survive intact.
 
 import os
 import re
-import struct
+
+import smf
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GM_REFERENCE = os.path.join(HERE, "..", "references", "gm-instruments.md")
@@ -45,31 +46,22 @@ def gm_names():
     return {int(num) - 1: name for name, num in re.findall(r"`([^`]+)` \((\d+)\)", text)}
 
 
-def _read_varlen(data, i):
-    val = 0
-    while True:
-        b = data[i]
-        i += 1
-        val = (val << 7) | (b & 0x7F)
-        if not b & 0x80:
-            return val, i
-
-
 def _scan_track(data, start, end):
     """Summarise one MTrk body.
 
     Returns (name, program, channel, note count, velocities, longest note in
-    ticks, total note ticks).  The last three are what tell you whether the
-    written dynamics survived the trip: a part with one distinct velocity got no
-    shaping at all, and a part that spends most of its time inside long held
-    notes cannot be shaped by velocity, because velocity is fixed at note-on.
+    ticks, every note's length in ticks).  The last three are what tell you
+    whether the written dynamics survived the trip: a part with one distinct
+    velocity got no shaping at all, and a part that spends most of its time
+    inside long held notes cannot be shaped by velocity, because velocity is
+    fixed at note-on.
     """
     i, status = start, None
     name, program, channel, notes = None, None, None, 0
     velocities, longest, sounding, tick = [], 0, {}, 0
     durations = []
     while i < end:
-        delta, i = _read_varlen(data, i)
+        delta, i = smf.read_varlen(data, i)
         tick += delta
         b = data[i]
         if b & 0x80:
@@ -78,12 +70,12 @@ def _scan_track(data, start, end):
         if status == 0xFF:
             meta = data[i]
             i += 1
-            length, i = _read_varlen(data, i)
+            length, i = smf.read_varlen(data, i)
             if meta == 0x03 and name is None:
                 name = data[i:i + length].decode("latin1")
             i += length
         elif status in (0xF0, 0xF7):
-            length, i = _read_varlen(data, i)
+            length, i = smf.read_varlen(data, i)
             i += length
         else:
             high = status & 0xF0
@@ -117,32 +109,28 @@ def split_tracks(midi_path, outdir):
     to carry layout-only material such as `\\break`s -- are skipped rather than
     rendered to silence.
     """
-    data = open(midi_path, "rb").read()
-    if data[:4] != b"MThd":
-        raise ValueError(f"{midi_path} is not a Standard MIDI File")
-    division = struct.unpack(">H", data[12:14])[0]
+    with open(midi_path, "rb") as fh:
+        data = fh.read()
+    _fmt, _ntracks, division = smf.header(data, str(midi_path))
 
-    chunks, pos = [], 14
-    while pos < len(data) - 8:
-        length = struct.unpack(">I", data[pos + 4:pos + 8])[0]
-        if data[pos:pos + 4] == b"MTrk":
-            chunks.append((pos + 8, pos + 8 + length, data[pos:pos + 8 + length]))
-        pos += 8 + length
+    chunks = smf.tracks(data)
     if not chunks:
         raise ValueError(f"{midi_path} contains no tracks")
 
     os.makedirs(outdir, exist_ok=True)
-    conductor = chunks[0][2]
+    conductor = chunks[0][3]
     names = gm_names()
     parts = []
-    for n, (start, end, blob) in enumerate(chunks):
+    for n, (_kind, start, end, blob) in enumerate(chunks):
         name, program, channel, notes, velocities, longest, durations = _scan_track(
             data, start, end)
         if not notes:
             continue
         path = os.path.join(outdir, f"part{n:02d}.midi")
         with open(path, "wb") as fh:
-            fh.write(b"MThd" + struct.pack(">IHHH", 6, 1, 2, division))
+            # Format 1 with two tracks: the tempo map, then this part. Anything
+            # else here changes what fluidsynth renders.
+            fh.write(smf.write_header(1, 2, division))
             fh.write(conductor)
             fh.write(blob)
         label = (name or "").strip(": ") or None

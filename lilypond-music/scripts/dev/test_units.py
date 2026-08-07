@@ -35,6 +35,7 @@ import predictors                                          # noqa: E402
 import preview_voice                                       # noqa: E402
 import render                                              # noqa: E402
 import sing                                                # noqa: E402
+import smf                                                 # noqa: E402
 import vocal_score                                         # noqa: E402
 
 
@@ -673,26 +674,78 @@ class LettersToPhonemesTests(unittest.TestCase):
                 self.assertIn(ph, known, f"{word} -> {ph}")
 
 
-# ------------------------------------------------------------ midi_expression
+# ----------------------------------------------------------------------- smf
 
 class VarlenTests(unittest.TestCase):
-    """midi_expression variable-length quantities, both directions."""
+    """smf variable-length quantities, both directions."""
 
     def test_round_trip(self):
         """every value a delta time can hold survives write then read"""
         for value in (0, 1, 127, 128, 255, 8192, 0x1FFFFF, 0x0FFFFFFF):
-            blob = midi_expression._write_varlen(value)
-            got, index = midi_expression._read_varlen(blob + b"\x00", 0)
+            blob = smf.write_varlen(value)
+            got, index = smf.read_varlen(blob + b"\x00", 0)
             self.assertEqual(got, value)
             self.assertEqual(index, len(blob))
 
     def test_the_known_encodings(self):
         """the boundary cases, against the values the SMF spec states"""
-        self.assertEqual(midi_expression._write_varlen(0), b"\x00")
-        self.assertEqual(midi_expression._write_varlen(127), b"\x7f")
-        self.assertEqual(midi_expression._write_varlen(128), b"\x81\x00")
-        self.assertEqual(midi_expression._write_varlen(0x0FFFFFFF),
-                         b"\xff\xff\xff\x7f")
+        self.assertEqual(smf.write_varlen(0), b"\x00")
+        self.assertEqual(smf.write_varlen(127), b"\x7f")
+        self.assertEqual(smf.write_varlen(128), b"\x81\x00")
+        self.assertEqual(smf.write_varlen(0x0FFFFFFF), b"\xff\xff\xff\x7f")
+
+
+class ChunkTests(unittest.TestCase):
+    """smf.header and smf.chunks: the file's shape, before any events."""
+
+    @staticmethod
+    def file(*bodies, division=384, fmt=1):
+        out = smf.write_header(fmt, len(bodies), division)
+        for kind, body in bodies:
+            out += kind + len(body).to_bytes(4, "big") + body
+        return out
+
+    def test_the_header_round_trips(self):
+        """write_header produces exactly what header reads back"""
+        self.assertEqual(smf.header(smf.write_header(1, 2, 384)), (1, 2, 384))
+
+    def test_split_tracks_writes_the_bytes_it_always_did(self):
+        """the hand-built header split_tracks used, to the byte"""
+        # A format-0 file or a wrong track count changes what fluidsynth plays.
+        self.assertEqual(smf.write_header(1, 2, 384),
+                         b"MThd\x00\x00\x00\x06\x00\x01\x00\x02\x01\x80")
+
+    def test_junk_is_not_a_midi_file(self):
+        """a file that does not start MThd is rejected by name"""
+        with self.assertRaises(ValueError) as caught:
+            smf.header(b"RIFF" + b"\x00" * 20, "score.midi")
+        self.assertIn("score.midi", str(caught.exception))
+
+    def test_smpte_division_is_rejected(self):
+        """every reader here assumes ticks per quarter note"""
+        with self.assertRaises(ValueError):
+            smf.header(smf.write_header(1, 1, 0xE228))
+
+    def test_chunks_bracket_the_bodies(self):
+        """start and end cover the body alone; blob carries its own header"""
+        data = self.file((b"MTrk", b"\x00\xff\x2f\x00"), (b"MTrk", b"\x01\x02"))
+        got = smf.chunks(data)
+        self.assertEqual([k for k, _s, _e, _b in got], [b"MTrk", b"MTrk"])
+        for _kind, start, end, blob in got:
+            self.assertEqual(len(blob), (end - start) + smf.CHUNK_HEADER_BYTES)
+            self.assertEqual(blob[smf.CHUNK_HEADER_BYTES:], data[start:end])
+
+    def test_a_foreign_chunk_is_kept_but_is_not_a_track(self):
+        """chunks() reports everything; tracks() reports only MTrk"""
+        data = self.file((b"MTrk", b"\x00"), (b"XFIH", b"\x00\x00"),
+                         (b"MTrk", b"\x00"))
+        self.assertEqual(len(smf.chunks(data)), 3)
+        self.assertEqual(len(smf.tracks(data)), 2)
+
+    def test_a_truncated_chunk_ends_the_walk(self):
+        """a length running past the buffer yields nothing rather than a stub"""
+        data = self.file((b"MTrk", b"\x00\x00")) + b"MTrk\x00\x00\x10\x00"
+        self.assertEqual(len(smf.chunks(data)), 1)
 
 
 class ParseHairpinsTests(unittest.TestCase):
