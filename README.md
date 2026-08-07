@@ -89,7 +89,12 @@ this repository and mostly is not written down anywhere else.
 
 ## Licence
 
-Not yet declared for this repository's own contents. Everything third-party it
-touches is named with its terms in
-`lilypond-music/references/singing-synthesis.md`; nothing third-party is
-redistributed here.
+[MIT](LICENSE), for this repository's own contents: the scripts, the skill, the
+documentation, and the music in `songs/`.
+
+That covers the code and nothing else. The things this skill *drives* are not
+MIT and are not redistributed here: the DiffSinger voicebanks are all
+non-commercial and several forbid redistribution, and the community vocoders are
+CC BY-NC-SA 4.0. `lilypond-music/references/singing-synthesis.md` section 2
+names each one with its terms. Using this repository's code is one permission;
+using a bank with it is a separate one you take up with that bank.
