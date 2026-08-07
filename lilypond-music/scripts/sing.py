@@ -73,9 +73,13 @@ import re
 import subprocess
 import sys
 import wave
+import zipfile
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from errors import SkillError, cli, onnx_errors           # noqa: E402
 
 HERE = Path(__file__).resolve().parent
 
@@ -95,7 +99,14 @@ BREATH = ["AP", "br", "breath"]
 
 
 def die(msg):
-    sys.exit(f"sing.py: {msg}")
+    """Stop, with a sentence the caller can act on.
+
+    A raise rather than `sys.exit`, because every one of these sits in a
+    function something else imports: `selftest.py` and `bank_check.py` both
+    build a `Voice` in-process, and a bank without a dsconfig.yaml should be an
+    exception they can see rather than the end of their process.
+    """
+    raise SkillError(msg)
 
 
 def load_yaml(path, tolerant=False):
@@ -227,7 +238,12 @@ class Voice:
             return None
         try:
             found = ph_mod.Phonemizer.from_plugin(path)
-        except Exception as e:
+        except (OSError, ValueError, zipfile.BadZipFile) as e:
+            # A plugin that cannot be read costs pronunciation, not the render,
+            # so it is reported and skipped. Narrowly: these are what an
+            # unreadable file, a .dll with no archive in it and a truncated zip
+            # actually raise, and anything else here would be a bug in
+            # phonemizer.py rather than a problem with the bank.
             print(f"  ! could not read the phonemizer plugin {Path(path).name}: "
                   f"{str(e)[:120]}")
             return None
@@ -487,7 +503,9 @@ def inspect_bank(path, vocoder=None):
         try:
             s = onnxruntime.InferenceSession(str(onnx_file), opts,
                                              providers=["CPUExecutionProvider"])
-        except Exception as e:
+        except onnx_errors() as e:
+            # --inspect exists to describe a bank that is not working, so one
+            # model it cannot open must not stop it describing the rest.
             print(f"  ! could not load: {str(e)[:200]}")
             continue
         for i in s.get_inputs():
@@ -1065,6 +1083,26 @@ def write_wav(path, samples, rate):
 # main
 # --------------------------------------------------------------------------
 
+VARIANCE_PARAMETERS = ("energy", "breathiness", "voicing", "tension")
+
+
+def parse_variance(spec):
+    """`--variance E,B,V,T` to {parameter: dB offset}.
+
+    All four or none: `zip` used to truncate silently against a short list, so
+    `--variance 0,0` built a dict of two and the render died later on a
+    KeyError naming a tensor rather than the flag.
+    """
+    try:
+        numbers = [float(x) for x in spec.split(",")]
+    except ValueError:
+        numbers = []
+    if len(numbers) != len(VARIANCE_PARAMETERS):
+        die("--variance wants four numbers -- energy,breathiness,voicing,"
+            f"tension -- e.g. 0,0,0,0 (got {spec!r})")
+    return dict(zip(VARIANCE_PARAMETERS, numbers))
+
+
 def load_vocals(source, outdir):
     src = Path(source)
     if src.suffix == ".json":
@@ -1175,11 +1213,7 @@ def main():
         die("pass --voice /path/to/voicebank, or --preview to hear the line "
             "through the built-in formant voice")
 
-    try:
-        variance = dict(zip(("energy", "breathiness", "voicing", "tension"),
-                            [float(x) for x in args.variance.split(",")]))
-    except ValueError:
-        die("--variance wants four numbers, e.g. 0,0,0,0")
+    variance = parse_variance(args.variance)
 
     warn = set()
     phrases = phrase_split(line["notes"], clock)
@@ -1263,4 +1297,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    cli(main, "sing.py")

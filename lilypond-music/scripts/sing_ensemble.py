@@ -53,6 +53,9 @@ from pathlib import Path
 
 import numpy as np
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from errors import SkillError, cli                        # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 
 # Balance and placement. The banks are not equally loud -- TIGER comes out
@@ -66,7 +69,7 @@ DECAYS = "0.35|0.26|0.19|0.13"
 
 
 def die(msg):
-    sys.exit(f"sing_ensemble.py: {msg}")
+    raise SkillError(msg)
 
 
 def pairs(values, what, cast=str):
@@ -352,4 +355,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    cli(main, "sing_ensemble.py")

@@ -28,6 +28,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from column_map import note_anchors, parse_columns       # noqa: E402
+from errors import SkillError, cli                       # noqa: E402
 from lily_layout import analyze_pages, ink_bbox          # noqa: E402
 from midi_expression import add_expression, parse_hairpins  # noqa: E402
 from midi_split import describe, split_tracks             # noqa: E402
@@ -49,13 +50,13 @@ def run(cmd, **kw):
     proc = subprocess.run(cmd, capture_output=True, text=True, **kw)
     if proc.returncode != 0:
         sys.stderr.write(f"\n$ {' '.join(cmd)}\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}\n")
-        raise SystemExit(f"command failed: {cmd[0]}")
+        raise SkillError(f"command failed: {cmd[0]}")
     return proc
 
 
 def need(binary, hint):
     if shutil.which(binary) is None:
-        raise SystemExit(f"missing dependency: {binary}\n  install with: {hint}")
+        raise SkillError(f"missing dependency: {binary}\n  install with: {hint}")
 
 
 def pages_of(stem):
@@ -96,7 +97,7 @@ def engrave(score, work, resolution):
     display_pngs = pages_of(base)
     analysis_pngs = pages_of(analysis)
     if len(display_pngs) != len(analysis_pngs):
-        raise SystemExit("display and analysis renders disagree on page count")
+        raise SkillError("display and analysis renders disagree on page count")
     midis = sorted(glob.glob(f"{base}*.mid*"))
     return {
         "pdf": f"{base}.pdf",
@@ -115,7 +116,7 @@ def engrave(score, work, resolution):
 def find_soundfont(explicit=None):
     sf = explicit or next((p for p in SOUNDFONTS if os.path.exists(p)), None)
     if not sf:
-        raise SystemExit("no GM soundfont found; pass --soundfont or run setup.sh")
+        raise SkillError("no GM soundfont found; pass --soundfont or run setup.sh")
     return sf
 
 
@@ -128,7 +129,7 @@ def select_parts(key, parts, flag):
             or key.lower() in p["name"].lower()
             or key.lower() in names.get(p["program"], "").lower()]
     if not hits:
-        raise SystemExit(f"{flag}: nothing matches {key!r}. Parts are:\n"
+        raise SkillError(f"{flag}: nothing matches {key!r}. Parts are:\n"
                          + describe(parts))
     return hits
 
@@ -144,7 +145,7 @@ def parse_mix(spec, parts):
     settings = {}
     for item in (i.strip() for i in spec.split(",") if i.strip()):
         if "=" not in item:
-            raise SystemExit(f"--mix: expected key=value, got {item!r}")
+            raise SkillError(f"--mix: expected key=value, got {item!r}")
         key, value = (v.strip() for v in item.split("=", 1))
         pan = 0.0
         if "/" in value:
@@ -152,16 +153,16 @@ def parse_mix(spec, parts):
             try:
                 pan = max(-1.0, min(1.0, float(pan_s)))
             except ValueError:
-                raise SystemExit(f"--mix: {pan_s!r} is not a stereo balance "
-                                 "(a number from -1 to 1)")
+                raise SkillError(f"--mix: {pan_s!r} is not a stereo balance "
+                                 "(a number from -1 to 1)") from None
         if value.lower() in ("mute", "off"):
             gain = -120.0
         else:
             try:
                 gain = float(value)
             except ValueError:
-                raise SystemExit(f"--mix: {value!r} is not a gain in dB "
-                                 "(or 'mute')")
+                raise SkillError(f"--mix: {value!r} is not a gain in dB "
+                                 "(or 'mute')") from None
         for p in select_parts(key, parts, "--mix"):
             settings[p["index"]] = (gain, pan)
     return settings
@@ -213,13 +214,13 @@ def parse_eq(spec, parts):
     settings = {}
     for item in (i.strip() for i in spec.split(",") if i.strip()):
         if "=" not in item:
-            raise SystemExit(f"--eq: expected key=value, got {item!r}")
+            raise SkillError(f"--eq: expected key=value, got {item!r}")
         key, value = (v.strip() for v in item.split("=", 1))
         chain = []
         for stage in (s.strip() for s in value.split("|") if s.strip()):
             chain += eq_stage(stage)
         if not chain:
-            raise SystemExit(f"--eq: {value!r} describes no filter")
+            raise SkillError(f"--eq: {value!r} describes no filter")
         for p in select_parts(key, parts, "--eq"):
             settings.setdefault(p["index"], []).extend(chain)
     return settings
@@ -237,14 +238,14 @@ def eq_stage(stage):
             try:
                 return [f"{filt}=f={float(stage[len(prefix):]):.0f}"]
             except ValueError:
-                raise SystemExit(f"--eq: {stage!r} needs a frequency in Hz")
+                raise SkillError(f"--eq: {stage!r} needs a frequency in Hz") from None
     # A bell written the way it is spoken: "2500 plus 3 dB, Q of 1.4".
     m = BELL_RE.match(stage)
     if m:
         freq, gain, q = m.group(1), m.group(2), m.group(3) or "1.0"
         return [f"equalizer=f={float(freq):.0f}:t=q:w={float(q):.2f}:"
                 f"g={float(gain):.2f}"]
-    raise SystemExit(
+    raise SkillError(
         f"--eq: cannot read {stage!r}. Expected a preset "
         f"({', '.join(sorted(EQ_PRESETS))}), hp:HZ, lp:HZ, or a bell like "
         "2500+3 or 400-3/1.4")
@@ -752,14 +753,15 @@ def main():
         try:
             low, high = (float(v) for v in args.band.split(":"))
         except ValueError:
-            sys.exit(f"--band wants LOW:HIGH in Hz, got {args.band!r}")
+            raise SkillError(
+                f"--band wants LOW:HIGH in Hz, got {args.band!r}") from None
         if not 0 < low < high:
-            sys.exit(f"--band: {low:.0f} Hz is not below {high:.0f} Hz")
+            raise SkillError(f"--band: {low:.0f} Hz is not below {high:.0f} Hz")
         print(f"synthesising audio ({len(parts)} parts, mixed)" if mix or eq
               else "synthesising audio ...")
         audio_path = os.path.join(outdir, f"{stem}.mp3")
         if args.vocal and not os.path.exists(args.vocal):
-            sys.exit(f"--vocal file not found: {args.vocal}")
+            raise SkillError(f"--vocal file not found: {args.vocal}")
         audio_dur = synthesize(art["midi"], work, audio_path, args.soundfont,
                                args.gain, not args.no_reverb, mix=mix, parts=parts,
                                vocal=args.vocal, vocal_gain=args.vocal_gain,
@@ -781,8 +783,13 @@ def main():
             print(f"  master eq          [{', '.join(master_eq)}]")
         print(f"  {audio_dur:.1f}s")
 
-    if args.no_video or not audio_path:
+    if args.no_video:
         print("done (no video requested)")
+        return
+    if not audio_path:
+        # The animation is driven by the MIDI timeline and muxed against the
+        # mp3, so there is nothing to sync a playhead to without the audio.
+        print("done (no audio, so no video)")
         return
 
     print("reading geometry and timeline ...")
@@ -834,4 +841,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    cli(main)

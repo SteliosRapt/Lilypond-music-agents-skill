@@ -31,6 +31,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import column_map                                          # noqa: E402
 import midi_expression                                     # noqa: E402
+from errors import SkillError                              # noqa: E402
 import predictors                                          # noqa: E402
 import preview_voice                                       # noqa: E402
 import render                                              # noqa: E402
@@ -299,6 +300,24 @@ class FillSilencesTests(unittest.TestCase):
         self.assertIn("SP", [ph for ph, a, b in got if 1.2 <= a < 2.0])
 
 
+class ParseVarianceTests(unittest.TestCase):
+    """sing.parse_variance: the --variance flag to four labelled offsets."""
+
+    def test_four_numbers(self):
+        """each number lands on the parameter it was written for"""
+        self.assertEqual(sing.parse_variance("1,-2,3.5,0"),
+                         {"energy": 1.0, "breathiness": -2.0,
+                          "voicing": 3.5, "tension": 0.0})
+
+    def test_the_wrong_count_is_refused(self):
+        """a short list used to zip silently and fail much later"""
+        # `dict(zip(...))` truncated against two numbers, so the run got as far
+        # as feeding the acoustic model and died on a KeyError naming a tensor.
+        for bad in ("0,0", "0,0,0,0,0", "", "0,0,0,x"):
+            with self.assertRaises(SkillError, msg=repr(bad)):
+                sing.parse_variance(bad)
+
+
 class SungNotesTests(unittest.TestCase):
     """sing.sung_notes: a tie is one sung note, a melisma is two."""
 
@@ -457,7 +476,7 @@ class EqStageTests(unittest.TestCase):
     def test_malformed_stages_are_refused(self):
         """anything unreadable stops the run rather than being ignored"""
         for bad in ("", "nonsense", "hp:abc", "2500", "2500+", "+3"):
-            with self.assertRaises(SystemExit, msg=repr(bad)):
+            with self.assertRaises(SkillError, msg=repr(bad)):
                 render.eq_stage(bad)
 
 
@@ -501,7 +520,7 @@ class ParseMixTests(unittest.TestCase):
     def test_malformed_specs_are_refused(self):
         """an unmatched key or an unreadable gain stops the run"""
         for bad in ("nosuchpart=-3", "drums=loud", "drums", "drums=0/left"):
-            with self.assertRaises(SystemExit, msg=repr(bad)):
+            with self.assertRaises(SkillError, msg=repr(bad)):
                 render.parse_mix(bad, self.PARTS)
 
 

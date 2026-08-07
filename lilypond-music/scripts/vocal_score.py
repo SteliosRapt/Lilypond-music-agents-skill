@@ -33,6 +33,9 @@ from fractions import Fraction
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from errors import SkillError, cli                         # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 LYRICS_ILY = HERE.parent / "assets" / "lyrics.ily"
 
@@ -83,7 +86,7 @@ def instrument(score, work):
          "-o", str(work / "probe"), str(score)],
         capture_output=True, text=True)
     if proc.returncode != 0 and "@NOTE" not in proc.stderr:
-        sys.exit(f"lilypond failed:\n{proc.stderr[-2000:]}")
+        raise SkillError(f"lilypond failed:\n{proc.stderr[-2000:]}")
     return proc.stderr
 
 
@@ -487,10 +490,11 @@ def main():
 
     data = parse(instrument(score, work))
     if not data["line_voice"]:
-        sys.exit("no lyrics found in this score -- nothing to sing.\n"
-                 "A sung line needs a \\new Lyrics attached to a named Voice, e.g.\n"
-                 '  \\new Staff \\new Voice = "singer" \\voicePart\n'
-                 '  \\new Lyrics \\lyricsto "singer" \\voiceWords')
+        raise SkillError(
+            "no lyrics found in this score -- nothing to sing.\n"
+            "A sung line needs a \\new Lyrics attached to a named Voice, e.g.\n"
+            '  \\new Staff \\new Voice = "singer" \\voicePart\n'
+            '  \\new Lyrics \\lyricsto "singer" \\voiceWords')
 
     # `tempo` stays for anything that only wants one number; `tempo_map` is
     # the truth, and it is what sing.py places notes with.
@@ -536,4 +540,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    cli(main, "vocal_score.py")
