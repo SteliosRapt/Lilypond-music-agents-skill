@@ -97,6 +97,17 @@ two voices each. Lyrics can be shared between parts or written separately per
 part. `\partCombine` merges two parts onto one staff and prints "a2"/"solo"
 automatically.
 
+**And they can be sung, all of them, by different voices.** A score with one
+named `Voice` per part and lyrics attached to each is what
+`scripts/sing_ensemble.py` takes: a voicebank per part, a dry stem per part,
+and an a cappella mix of the lot. Unaccompanied choral writing, close harmony,
+canons and rounds are inside the scope of this skill rather than at the edge of
+it — `references/singing-synthesis.md` section 10 is the workflow, and
+`songs/tide-and-lantern.ly` is a worked SATB example with four different banks
+on it. The constraint that matters when writing for them is range: the banks
+tested here hold full level between C3 and G5, and a part written outside that
+degrades rather than transposes.
+
 ## 4. Percussion
 
 `\drummode` replaces pitches with drum names -- `bd` (bass drum), `sn`, `hh`,

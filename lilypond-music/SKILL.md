@@ -1,6 +1,6 @@
 ---
 name: lilypond-music
-description: Write, engrave, and play back original music with LilyPond, and turn a score into a video where a playhead follows the notation bar by bar. Use this skill whenever the user asks to compose, notate, arrange, transcribe, harmonise, or "write music", asks for sheet music, a score, a PDF of notation, a MIDI file, or an audio rendering of music, asks for a scrolling-score or "sheet music with the music playing" video, or asks about LilyPond, staves, clefs, lyrics under a melody, chord charts, guitar tab, drum notation, or instrument parts, or asks for the words of a song to be actually sung -- a vocal, a singer, singing synthesis, a neural voice on the melody -- even if they never say "LilyPond" and even if they only ask for "a short piece" or "something that sounds like X".
+description: Write, engrave, and play back original music with LilyPond, and turn a score into a video where a playhead follows the notation bar by bar. Use this skill whenever the user asks to compose, notate, arrange, transcribe, harmonise, or "write music", asks for sheet music, a score, a PDF of notation, a MIDI file, or an audio rendering of music, asks for a scrolling-score or "sheet music with the music playing" video, or asks about LilyPond, staves, clefs, lyrics under a melody, chord charts, guitar tab, drum notation, or instrument parts, or asks for the words of a song to be actually sung -- a vocal, a singer, singing synthesis, a neural voice on the melody -- including several singers at once: an a cappella arrangement, close harmony, a choir, SATB, a canon or round, backing vocals, or a different voice on each part -- even if they never say "LilyPond" and even if they only ask for "a short piece" or "something that sounds like X".
 ---
 
 # Writing and visualising music with LilyPond
@@ -130,6 +130,36 @@ Two things are worth knowing before writing the vocal part:
   reassembled from it before being looked up in the bank's dictionary --
   "lan" and "terns" phonemise to nothing like "lanterns".
 - **Leave rests to breathe in.** A rest over 0.6s becomes a phrase boundary.
+
+### Several singers, or none of them accompanied
+
+A score with more than one named vocal part can have a different bank on each
+of them, which is how an a cappella arrangement, a close-harmony group or an
+SATB choir gets made. One command does the lot:
+
+```bash
+python3 scripts/sing_ensemble.py score.ly -o out/ \
+    --voice soprano=~/voices/liee --voice alto=~/voices/canary \
+    --voice tenor=~/voices/tiger  --voice bass=~/voices/triton
+```
+
+It renders each part with its own bank, prints what each one actually used,
+writes a dry stem per part for a DAW, and mixes them with a measured balance
+(banks differ by about 5 dB), a choir's placement and a built reverb, because
+four dry mono stems summed flat sound like four separate booths.
+`songs/tide-and-lantern.ly` is a worked example and `songs/notes.md` records
+the command that made it.
+
+**For a score video of an unaccompanied piece, mute the instrumental** --
+`render.py` performs the score's MIDI as well, so without
+`--mix "soprano=mute,alto=mute,..."` a piano doubles the choir.
+
+`references/singing-synthesis.md` section 10 is the whole workflow: what to
+check before rendering anything, the nine things that save time in the order
+they save it, and a table of what each common mistake sounds like. The two that
+cost the most: a part whose syllable count disagrees with its note count sings
+a syllable early from that bar onwards, and `--expressiveness` left at 1.0
+gives four singers each drifting 20 cents, which is a chord that never settles.
 
 `python3 scripts/vocal_score.py score.ly -o out/` runs just the extraction and
 prints what it found -- sung notes, melismata, words -- which is the fastest way
@@ -279,6 +309,9 @@ glance at a thumbnail.
   onnxruntime, or with the built-in preview voice (`--preview`).
   `--inspect` prints everything a bank declares, which is where to start with an
   unfamiliar one.
+- `scripts/sing_ensemble.py` -- one bank per part for a whole score: renders
+  them all, reports what each bank used, writes a stem each, and mixes them
+  into an a cappella track. The one command for choral and close-harmony work.
 - `scripts/predictors.py` -- the bank's optional `dsdur`, `dspitch` and
   `dsvariance` models: what each tensor means, how that was established, and
   the bounds placed on them.

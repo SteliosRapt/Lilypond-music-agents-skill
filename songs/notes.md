@@ -2,14 +2,15 @@
 
 An unaccompanied SATB piece, 28 bars, D dorian, about a minute and a half, with
 each part sung by a different DiffSinger voicebank through
-`lilypond-music/scripts/sing.py`. No instruments, no samples, no click: the
-whole record is four neural voices and a synthetic room.
+`lilypond-music/scripts/sing_ensemble.py`. No instruments, no samples, no
+click: the whole record is four neural voices and a synthetic room.
 
     tide-and-lantern.ly     the score
     tide-and-lantern.pdf    engraved
-    stems/{soprano,alto,tenor,bass}.wav    one bank each, dry, aligned to beat 0
-    tide-and-lantern.mp3    the mix
-    mix.py                  what made the mix from the stems
+    tide-and-lantern.flac   the mix, lossless
+    tide-and-lantern.mp3    the mix, 320k
+    tide-and-lantern.mp4    the score video, playhead on all four staves
+    stems/*.flac            one bank each, dry, aligned to beat 0, lossless
     liee-english-additions.yaml   nine dictionary entries the soprano needed
 
 ## Which bank sings what, and why
@@ -65,14 +66,29 @@ ninth chords instead.
 bash lilypond-music/scripts/setup.sh          # lilypond, ffmpeg
 bash lilypond-music/scripts/setup-singing.sh  # onnxruntime, pyyaml
 # the four banks, from their own releases (see references/singing-synthesis.md
-# section 2 for the URLs and the licences -- all four are non-commercial)
-python3 lilypond-music/scripts/vocal_score.py songs/tide-and-lantern.ly -o out/
-# then one render per part; line numbers are as vocal_score.py printed them
-python3 lilypond-music/scripts/sing.py out/tide-and-lantern-vocals.json \
-    --voice ~/voices/tiger --line 2 --steps 20 --expressiveness 0.7 -o out/tenor
-# ... and the same for lines 1 (bass), 3 (alto), 4 (soprano)
-python3 songs/mix.py --stems out/stems
+# section 2 for the URLs and the licences -- all four are non-commercial), then
+# the nine dictionary entries below, then:
+
+python3 lilypond-music/scripts/sing_ensemble.py songs/tide-and-lantern.ly \
+    -o out/ --format flac \
+    --voice "soprano=$LIEE" --voice alto=~/voices/canary \
+    --voice tenor=~/voices/tiger --voice bass=~/voices/triton \
+    --mode alto=canary_arc --mode tenor=tiger_fresh --mode bass=triton_gale \
+    --gain soprano=-1 --gain alto=-2 --gain tenor=+1 \
+    --pan soprano=-0.30 --pan alto=0.30 --pan tenor=-0.12 --pan bass=0.10 \
+    --stem-format flac
+
+# and the video: render.py performs the score's MIDI too, so mute all of it
+python3 lilypond-music/scripts/render.py songs/tide-and-lantern.ly \
+    --size 1920x1080 --vocal out/tide-and-lantern.flac \
+    --mix "soprano=mute,alto=mute,tenor=mute,bass=mute" --verify 8
 ```
+
+The `--gain` and `--pan` values are the ones that made the released mix; the
+script's own defaults are close but not identical (it spreads parts evenly).
+**A re-render is a different take**: diffusion is stochastic and unseeded, so
+the same command produces the same arrangement sung slightly differently, which
+is why the stems are committed rather than treated as intermediates.
 
 `--expressiveness 0.7` rather than the default 1.0: `dspitch` deviates from the
 written notes by a median 20 cents at 1.0, which is a singer, but four
@@ -98,6 +114,7 @@ vowel starts on its written onset, level and peak, and that no word fell through
 to letter-to-sound rules. Those numbers are in the session that produced this.
 
 **Not verified: whether it sounds good.** That needs ears. The likely things to
-want changed are the balance and the reverb (both in `mix.py`, both a one-line
-edit), the voice mode of any part (`--voice-mode`; TIGER has seven, TRITON four,
-CANARY three, and they are quite different characters), and `--expressiveness`.
+want changed are the balance and the reverb (`--gain`, `--pan`, `--wet` on the
+command above), the voice mode of any part (`--mode`; TIGER has seven, TRITON
+four, CANARY three, and they are quite different characters), and
+`--expressiveness`.

@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 
-# The four dry stems: 33 MB of wav, and `songs/notes.md` says exactly how to
-# regenerate them. The mix they make is committed; they are not.
-songs/stems/
+# Nothing in songs/ is ignored any more: the dry stems are kept as flac (13 MB,
+# bit-identical to the wavs they came from) because a re-render is a different
+# take -- diffusion is unseeded -- so they are the source, not an intermediate.
+
+# render.py's default output directory, and anything like it.
+out/

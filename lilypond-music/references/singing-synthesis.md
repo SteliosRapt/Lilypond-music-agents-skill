@@ -10,9 +10,10 @@ Contents:
 7. What is not modelled
 8. What differs between banks
 9. Qualifying a bank you have not used before
-10. Troubleshooting
-11. Why not MusicXML conversion
-12. The other engines, and why English narrows the field
+10. Several banks at once: a cappella and choral work
+11. Troubleshooting
+12. Why not MusicXML conversion
+13. The other engines, and why English narrows the field
 
 ---
 
@@ -26,7 +27,7 @@ Contents:
 `sing.py` drives a **DiffSinger** voicebank directly through onnxruntime: the
 same ONNX files OpenUtau loads, minus the GUI. DiffSinger is the open singing
 synthesiser with a real English voicebank ecosystem, which is the only reason it
-is the one wired up here (see section 12).
+is the one wired up here (see section 13).
 
 The vocal is rendered as a separate wav aligned to beat 0, then mixed with the
 fluidsynth instrumental. Keeping it separate is deliberate: it can be balanced
@@ -509,7 +510,115 @@ the same checks it runs against its stub banks, and it builds those stubs in
 both export conventions, so a change that quietly drops support for one of them
 fails there rather than on a user's bank.
 
-## 10. Troubleshooting
+## 10. Several banks at once: a cappella and choral work
+
+A score with four named vocal parts and four banks installed is a choir. This
+is a supported use of the skill, not a trick played on it: `sing.py` renders
+one line with one bank, and `scripts/sing_ensemble.py` is the layer above that
+renders every part and mixes them.
+
+```bash
+python3 scripts/sing_ensemble.py score.ly -o out/ \
+    --voice soprano=~/voices/liee  --voice alto=~/voices/canary \
+    --voice tenor=~/voices/tiger   --voice bass=~/voices/triton \
+    --mode tenor=tiger_fresh --gain tenor=+1 --pan soprano=-0.30
+```
+
+It extracts once, checks every part name against the score before rendering
+anything, runs the parts two at a time, prints per part which models that bank
+actually used and where its words came from, and writes:
+
+```
+out/stems/<part>.wav     each part dry and aligned to beat 0, for a DAW
+out/<score>.mp3          the mix   (--format flac or wav for lossless)
+```
+
+`songs/tide-and-lantern.ly` in this repository is a worked example: 28 bars of
+unaccompanied SATB, one bank per part, with `songs/notes.md` recording the
+command that made it and every decision behind it.
+
+### Why the mix is here and not in render.py
+
+`render.py --vocal` puts **one** sung line on top of a fluidsynth instrumental.
+An a cappella piece has no instrumental, and four dry mono stems summed flat
+sound like four people in four separate booths. So `sing_ensemble.py` does the
+three things that turns them into an ensemble, and each is one line to change:
+
+- **Balance is measured.** The banks are not equally loud — TIGER comes out
+  about 5 dB under CANARY on the same line — so every part is pulled to a
+  common level *measured while it is singing* (a part that rests more would
+  otherwise look quiet and get boosted for it), and `--gain part=dB` is then
+  the musical decision on top.
+- **Placement is a semicircle**, outer voices wide and inner voices close, and
+  nothing past a third of the way out: hard panning stops a voice being part of
+  a chord and turns it into a soloist. `--pan part=x` overrides.
+- **There is a room.** FFmpeg has no reverb filter, so one is built from a bank
+  of mutually prime delays, low-passed the way a real room absorbs treble.
+  `--wet 0` turns it off.
+
+For voices *with* instruments, render the parts here and hand the mix to
+`render.py --vocal out/score.mp3`.
+
+### The score video of an a cappella piece
+
+`render.py` always performs the score's MIDI, so an unaccompanied piece needs
+its instrumental muted explicitly — otherwise you get a piano doubling the
+choir:
+
+```bash
+python3 scripts/render.py score.ly --size 1920x1080 \
+    --vocal out/score.flac --mix "soprano=mute,alto=mute,tenor=mute,bass=mute"
+```
+
+`--list-tracks` prints the part names to mute. Read the playhead verification
+table it prints afterwards; if it did not say "verified", do not hand the video
+over.
+
+### Best practice, in the order it saves you time
+
+1. **Audition the arrangement before you commit to it.** `--steps 8` renders
+   about four times faster than 20 and says everything about balance, timing
+   and whether the harmony works. Take the take at 20 or more.
+2. **Ties, not extenders.** A tied note takes no syllable, so a part's syllable
+   count is exactly its number of untied notes and a miscount becomes a
+   LilyPond warning. `__` only extends a syllable where there is a real melisma
+   — a slur or a tie — and where there is not, LilyPond drops it and slides
+   every later syllable one note along.
+3. **Check the extraction before rendering anything.** `vocal_score.py` prints
+   "N sung notes, M melismatic, W words" per part and the syllable stream it
+   resolved. A melisma you did not write is a miscount; read the words back.
+4. **Write inside C3–G5.** That is where all four tested banks hold full level
+   (section 2). Probe an unfamiliar one before writing for it.
+5. **Give the tune to the quietest bank.** The part that must be heard should
+   not be the one fighting to be heard.
+6. **`--expressiveness 0.7` for ensembles**, which is this script's default
+   against `sing.py`'s 1.0. At 1.0 each part deviates from the written pitch by
+   a median 20 cents, which is one singer being human and four singers being a
+   chord that never settles.
+7. **One bank per directory.** The phonemizer plugin is looked for beside the
+   bank, and a pack can carry several languages (section 8).
+8. **`--literal-pitch` for a score video.** A model that scoops into a note is
+   doing what a singer does and visibly disagrees with a playhead drawn on
+   exact printed onsets.
+9. **Design overlaps around the harmony.** In a canon, restrict the motif to
+   the notes of one chord — the canon in `tide-and-lantern.ly` uses D-F-G-A-C
+   only, so every vertical combination its four staggered entries can produce
+   is a subset of Dm11 and no entry can collide with another.
+
+### Common mistakes
+
+| what you hear | what happened | fix |
+|---|---|---|
+| one part sings a syllable early from some bar onwards | its syllable count and note count disagree | count untied notes per part; prefer ties to `__` |
+| a part is fluent and pronounces nothing correctly | its bank found a plugin for another language, or none | read the `words` line; `--phonemizer part=PATH` |
+| a word comes out mangled in one part only | that bank's dictionary lacks it, so it was spelled out by rule | the run says which words; respell them in `\lyricmode`, or add them to the bank's dsdict |
+| a word you added to a dsdict is still missing | YAML: `on`, `no`, `yes`, `off` unquoted are booleans, so the entry is stored under `True` | quote every grapheme |
+| held chords never settle | every part deviating independently | lower `--expressiveness` |
+| one part sits on top of everything | flat summing, or normalising over silence | this script measures while singing; `--gain part=dB` for the rest |
+| a piano is doubling the choir in the video | `render.py` performed the score's MIDI | `--mix "part=mute,..."` for every part |
+| the top of a phrase is thin or buzzing | that bank's trained range has run out | check the range probe; move the part or change bank |
+
+## 11. Troubleshooting
 
 **"no lyrics found in this score".** The line needs a *named* voice:
 `\new Voice = "singer" \voicePart` with `\new Lyrics \lyricsto "singer"`.
@@ -581,7 +690,7 @@ gets scaled into whatever gap exists. Shorten the previous note or re-hyphenate.
 size, mel bins and fmin/fmax, but a vocoder trained with a different mel scale
 or base can still slip through if the config files lie about it.
 
-## 11. Why not MusicXML conversion
+## 12. Why not MusicXML conversion
 
 The obvious route is `.ly -> MusicXML -> singing synthesiser`, since MusicXML
 is what NNSVS and Sinsy read. It does not survive contact with real vocal
@@ -597,7 +706,7 @@ part, one voice, syllables, ties, slurs for melismata. It is what to hand to
 NNSVS, ESPnet or MuseScore, and it is generated from the same table `sing.py`
 uses, so the two can never disagree about what is being sung.
 
-## 12. The other engines, and why English narrows the field
+## 13. The other engines, and why English narrows the field
 
 | Engine | Input | Voices | Headless |
 |---|---|---|---|

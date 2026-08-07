@@ -247,6 +247,52 @@ def test_singing(work, source, voice, vocoder):
     check("the second verse can be sung", proc.returncode == 0)
 
 
+def test_ensemble(work, voices, vocoder):
+    """Several banks on one score, rendered and mixed in one command.
+
+    Two parts of the torture score, two steps each: this is not asking whether
+    it sounds like anything, it is asking whether the part-to-bank mapping, the
+    parallel renders, the stem naming and the ffmpeg graph all still hold
+    together, and whether a part with no bank is reported rather than silently
+    dropped.
+    """
+    print("\nensemble (sing_ensemble.py)")
+    out = work / "ensemble"
+    # torture.ly's two verses are two lyric lines under one voice, so this is
+    # also the case that has to be addressed by line number rather than name.
+    cmd = [sys.executable, SCRIPTS / "sing_ensemble.py", HERE / "torture.ly",
+           "-o", out, "--steps", "2", "--jobs", "2",
+           "--voice", f"1={voices[0]}", "--voice", f"2={voices[-1]}",
+           "--gain", "1=-2", "--pan", "2=0.4"]
+    if vocoder:
+        cmd += ["--vocoder", vocoder]
+    proc = run(cmd)
+    if not check("sing_ensemble.py renders two parts with two banks",
+                 proc.returncode == 0):
+        return
+    check("it writes one stem per part",
+          (out / "stems" / "1.wav").exists() and (out / "stems" / "2.wav").exists())
+    check("and one mix", (out / "torture.mp3").exists())
+    check("it reports what each bank used", "models  acoustic" in proc.stdout)
+    check("levels are measured, not assumed", "dBFS while singing" in proc.stdout)
+    check("--gain and --pan reach the mix", "-2" in proc.stdout and "+0.40" in proc.stdout,
+          [l for l in proc.stdout.splitlines() if "dBFS while singing" in l][:2])
+
+    for flag, expect, what in (
+            (["--voice", "nosuchpart=" + str(voices[0])], "no part named",
+             "a part that is not in the score"),
+            (["--voice", f"singer={voices[0]}"], "more than one verse",
+             "a voice name covering two verses"),
+            (["--voice", f"1={SCRIPTS}"], "no dsconfig.yaml",
+             "a bank path that is not a bank"),
+            ([], "This score's parts are", "no --voice at all")):
+        proc = run([sys.executable, SCRIPTS / "sing_ensemble.py",
+                    HERE / "torture.ly", "-o", out] + flag)
+        check(f"{what} is refused with a useful message",
+              proc.returncode != 0 and expect in (proc.stdout + proc.stderr),
+              (proc.stdout + proc.stderr).strip().splitlines()[-1][:70])
+
+
 def test_predictors(work, voice, vocoder, real):
     """The predictor chain itself, in-process, where it can be measured."""
     print("\npredictors")
@@ -368,6 +414,7 @@ def main():
         for i, voice in enumerate(voices):
             test_singing(tmp / f"sing{i}", tmp, voice, vocoder)
             test_predictors(tmp, voice, vocoder, bool(args.voice))
+        test_ensemble(tmp, voices, vocoder)
 
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for name in FAIL:
