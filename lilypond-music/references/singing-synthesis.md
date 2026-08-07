@@ -439,8 +439,12 @@ entry is used where it does not.
 
 ### The vocoder may be inside, named, or missing
 
-All four banks tested ship `dsvocoder/`, which is preferred over anything
-passed with `--vocoder`. LIEE also names an external dependency
+All four banks tested ship `dsvocoder/`, which is found automatically, so
+`--vocoder` is only needed for a bank that ships none. Note which way round
+that preference runs: an explicit `--vocoder` **overrides** the bank's own, so
+passing one on a bank that does not need it is not harmless — a mismatched
+vocoder produces noise rather than a worse voice. LIEE also names an external
+dependency
 (`vocoder: pc_nsf_hifigan_44.1k_hop512_128bin_2025.02`) and ships that same
 vocoder inside. What must match is the mel definition — sample rate, hop, bin
 count and band edges — and it is checked before anything is rendered, allowing
