@@ -38,7 +38,8 @@ def gm_names():
     by program number.
     """
     try:
-        text = open(GM_REFERENCE).read()
+        with open(GM_REFERENCE, encoding="utf-8") as fh:
+            text = fh.read()
     except OSError:
         return {}
     return {int(num) - 1: name for name, num in re.findall(r"`([^`]+)` \((\d+)\)", text)}

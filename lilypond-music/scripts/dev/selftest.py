@@ -5,6 +5,10 @@
     python3 scripts/dev/selftest.py --video      # and the video, with sync verification
     python3 scripts/dev/selftest.py --voice ~/voices/tiger --vocoder ~/voices/pc_nsf_hifigan
 
+It opens by running `dev/test_units.py` in-process -- the unit tests over the
+pure functions, which take under a second and name whatever they break -- and
+counts those results in its own total, so this stays the one command to run.
+
 `dev/torture.ly` is the fixture: a pickup, mid-score metre and tempo changes,
 ties across barlines, a melisma, `_`, two verses, a bar filled exactly by one
 whole note, a hairpin over a held note, and a word no small dictionary has.
@@ -48,6 +52,34 @@ def run(cmd, **kw):
         print(proc.stdout[-3000:])
         print(proc.stderr[-3000:])
     return proc
+
+
+# --------------------------------------------------------------- unit tests
+
+def test_units():
+    """`dev/test_units.py`, run in-process so its results join the total.
+
+    First, because it is the fastest feedback in the repository -- under a
+    second, no lilypond, no ffmpeg -- and because a failure here names the
+    function that broke, which nothing else below does.
+    """
+    print("\nunit tests (dev/test_units.py)")
+    import unittest
+
+    import test_units as units
+
+    suite = unittest.defaultTestLoader.loadTestsFromModule(units)
+    cases = [t for group in suite for t in group]
+    result = unittest.TestResult()
+    suite.run(result)
+
+    bad = {t.id(): why for t, why in result.failures + result.errors}
+    for case in cases:
+        name = (case.shortDescription()
+                or case.id().rsplit(".", 1)[-1].replace("_", " "))
+        check(f"{type(case).__name__}: {name}", case.id() not in bad,
+              bad.get(case.id(), "").strip().splitlines()[-1][:70]
+              if case.id() in bad else "")
 
 
 # ---------------------------------------------------------------- extraction
@@ -174,22 +206,18 @@ def test_mix_errors(work):
 
 
 def test_eq_parsing():
+    """--eq across several parts at once. The single stages are unit-tested."""
     print("\nEQ specification")
     import render
-    parts = [{"index": 1, "name": "koto", "program": 107},
-             {"index": 2, "name": "drums", "program": 0}]
+    parts = [{"index": 1, "name": "koto", "program": 107, "channel": 0,
+              "notes": 40},
+             {"index": 2, "name": "drums", "program": 0, "channel": 9,
+              "notes": 60}]
     got = render.parse_eq("koto=warm|2500+3/1.4|hp:80,drums=lp:9000", parts)
     check("a preset expands to its filters",
           any("equalizer=f=250" in f for f in got[1]))
-    check("a bell keeps its frequency, gain and Q",
-          "equalizer=f=2500:t=q:w=1.40:g=3.00" in got[1])
-    check("a cut is read as a cut",
-          render.eq_stage("400-3") == ["equalizer=f=400:t=q:w=1.00:g=-3.00"],
-          str(render.eq_stage("400-3")))
     check("stages chain in order", got[1][-1] == "highpass=f=80")
     check("a second part is independent", got[2] == ["lowpass=f=9000"])
-    check("shelves use a shelf filter, not a 0.7 Hz bell",
-          all("t=h" not in f for fs in render.EQ_PRESETS.values() for f in fs))
 
 
 # ------------------------------------------------------------------- singing
@@ -386,6 +414,8 @@ def main():
     ap.add_argument("--vocoder")
     ap.add_argument("--keep", action="store_true", help="keep the working directory")
     args = ap.parse_args()
+
+    test_units()
 
     tmp = Path(tempfile.mkdtemp(prefix="lilypond-selftest-"))
     print(f"working in {tmp}")

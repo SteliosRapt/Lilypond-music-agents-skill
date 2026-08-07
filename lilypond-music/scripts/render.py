@@ -522,7 +522,8 @@ def build_video(pages, bars, frame, work, out_mp4, audio, audio_dur,
         chain.append(f"[v{len(overlays)}]{','.join(tail)}[v]")
 
         graph_path = os.path.join(work, f"graph{p}.txt")
-        open(graph_path, "w").write(";".join(chain))
+        with open(graph_path, "w") as fh:
+            fh.write(";".join(chain))
 
         cmd = ["ffmpeg", "-y",
                "-loop", "1", "-framerate", str(fps), "-t", f"{duration:.3f}", "-i", bg_path]
@@ -539,7 +540,8 @@ def build_video(pages, bars, frame, work, out_mp4, audio, audio_dur,
         segments.append(seg)
 
     concat = os.path.join(work, "concat.txt")
-    open(concat, "w").write("".join(f"file '{os.path.abspath(s)}'\n" for s in segments))
+    with open(concat, "w") as fh:
+        fh.write("".join(f"file '{os.path.abspath(s)}'\n" for s in segments))
     run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat, "-i", audio,
          "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest",
          "-movflags", "+faststart", out_mp4])
@@ -818,9 +820,10 @@ def main():
                         args.fps, hex2rgb(args.playhead), args.highlight,
                         hex2rgb(args.bg), track)
 
-    json.dump({"bars": bars, "pages": [{k: v for k, v in p.items() if k != "display"}
-                                       for p in pages]},
-              open(os.path.join(work, "layout.json"), "w"), indent=1)
+    with open(os.path.join(work, "layout.json"), "w") as fh:
+        json.dump({"bars": bars,
+                   "pages": [{k: v for k, v in p.items() if k != "display"}
+                             for p in pages]}, fh, indent=1)
 
     if args.verify:
         verify(out_mp4, track, bars, args.verify, bar_w, args.fps, work=work)

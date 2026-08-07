@@ -180,7 +180,8 @@ def note_anchors(cols, pages, bars, moment_to_sec, tolerance=8.0):
 
 if __name__ == "__main__":
     import sys
-    text = open(sys.argv[1]).read()
+    with open(sys.argv[1], encoding="utf-8") as fh:
+        text = fh.read()
     cols = parse_columns(text)
     groups = group_systems(cols)
     print(f"{len(cols)} paper columns in {len(groups)} systems")
