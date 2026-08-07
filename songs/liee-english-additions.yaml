@@ -1,0 +1,49 @@
+# The nine words this song needs that LIEE : Immortal Idol MM 2.8 does not
+# know. Its `dsdur/dsdict-en.yaml` holds 208 entries of which about twenty are
+# English -- the rest are Japanese kana -- and it ships no English phonemizer
+# plugin, so anything outside that list is spelled out by letter-to-sound rules
+# and comes out as a guess.
+#
+# To use them:
+#
+#   cp "$BANK/dsdur/dsdict-en.yaml" "$BANK/dsdur/dsdict-en.yaml.orig"
+#   python3 - <<'EOF'
+#   import yaml, pathlib
+#   bank = pathlib.Path("~/voices/liee/...").expanduser()
+#   d = yaml.safe_load((bank/"dsdur/dsdict-en.yaml").read_text(encoding="utf-8"))
+#   add = yaml.safe_load(pathlib.Path("songs/liee-english-additions.yaml").read_text())
+#   known = {e["grapheme"] for e in d["entries"]}
+#   d["entries"] += [e for e in add["entries"] if e["grapheme"] not in known]
+#   (bank/"dsdur/dsdict-en.yaml").write_text(yaml.safe_dump(d, allow_unicode=True))
+#   EOF
+#
+# The transcriptions follow the bank's own conventions, which are not ARPAbet
+# and were read off its existing entries rather than assumed:
+#
+#   /w/ is `L`     わ -> L a,  and "want" -> L aa n
+#   /v/ is `w`     ヴ -> w O   (so `w` is NOT the w sound)
+#   /y/ is `j`     や -> j a,  and "universe" -> j uw n ih w er s
+#   /t/ flaps to `dx` between vowels and at the end of a casual word:
+#                  "not" -> n aa dx,  "it" -> ih dx,  "but" -> b ah dx
+#
+# Every phoneme below appears in `mm_ac_2.8.phonemes.json`. A phoneme that does
+# not is not an error anywhere -- it is silently replaced with silence.
+#
+# Hyphenate `un -- til` and `wa -- ter` in \lyricmode: the pipeline reassembles
+# the word, looks it up once, and splits the phonemes back across the notes by
+# maximal onset, so the vowel count of the entry has to match the hyphenation.
+
+# Every grapheme is quoted deliberately. `on` unquoted is a YAML 1.1 boolean,
+# so it loads as True, is stored under the key "True", and the word "on" is
+# still missing -- which the run reports as one word spelled out by rule and
+# nothing else complains about.
+entries:
+  - {grapheme: "hold",  phonemes: [hh, ow, l, d]}
+  - {grapheme: "line",  phonemes: [l, ay, n]}
+  - {grapheme: "light", phonemes: [l, ay, t]}
+  - {grapheme: "until", phonemes: [ah, n, t, ih, l]}
+  - {grapheme: "we",    phonemes: [L, iy]}
+  - {grapheme: "come",  phonemes: [k, ah, m]}
+  - {grapheme: "home",  phonemes: [hh, ow, m]}
+  - {grapheme: "on",    phonemes: [aa, n]}
+  - {grapheme: "water", phonemes: [L, aa, dx, er]}

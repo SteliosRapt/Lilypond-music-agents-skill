@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+
+# The four dry stems: 33 MB of wav, and `songs/notes.md` says exactly how to
+# regenerate them. The mix they make is committed; they are not.
+songs/stems/
