@@ -29,6 +29,13 @@ same ONNX files OpenUtau loads, minus the GUI. DiffSinger is the open singing
 synthesiser with a real English voicebank ecosystem, which is the only reason it
 is the one wired up here (see section 13).
 
+`sing.py` is the command; behind it are `voicebank.py` (a bank on disk, and the
+built-in preview voice), `phonemes.py` (words and notes to a phoneme timeline),
+`score_time.py` (score moments to seconds) and `predictors.py` (the bank's
+optional models). Nothing below names them — everything in this document is
+about the command line — but that is where to look when a section says "the
+pipeline does X".
+
 The vocal is rendered as a separate wav aligned to beat 0, then mixed with the
 fluidsynth instrumental. Keeping it separate is deliberate: it can be balanced
 with `--vocal-gain`, replaced without re-rendering the instruments, or handed to
@@ -280,7 +287,7 @@ The bank ships more than the acoustic model, and the pipeline uses all of it.
 | Model | Used | Notes |
 |---|---|---|
 | acoustic | yes | verified against TIGER v102 |
-| vocoder | yes | verified by analysis-resynthesis, 0.944 mel correlation |
+| vocoder | yes | verified by analysis-resynthesis, 0.963 mel correlation (`dev/vocoder_resynth_check.py`) |
 | phonemizer plugin | yes | see `scripts/phonemizer.py` |
 | `dsdur` | yes | phoneme durations within a note; replaces the `CONSONANT_S` table |
 | `dspitch` | yes | expressive f0 around the written notes; replaces `f0_curve()` |
@@ -432,8 +439,12 @@ entry is used where it does not.
 
 ### The vocoder may be inside, named, or missing
 
-All four banks tested ship `dsvocoder/`, which is preferred over anything
-passed with `--vocoder`. LIEE also names an external dependency
+All four banks tested ship `dsvocoder/`, which is found automatically, so
+`--vocoder` is only needed for a bank that ships none. Note which way round
+that preference runs: an explicit `--vocoder` **overrides** the bank's own, so
+passing one on a bank that does not need it is not harmless — a mismatched
+vocoder produces noise rather than a worse voice. LIEE also names an external
+dependency
 (`vocoder: pc_nsf_hifigan_44.1k_hop512_128bin_2025.02`) and ships that same
 vocoder inside. What must match is the mel definition — sample rate, hop, bin
 count and band edges — and it is checked before anything is rendered, allowing

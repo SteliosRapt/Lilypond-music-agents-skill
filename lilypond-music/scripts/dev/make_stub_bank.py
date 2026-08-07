@@ -34,16 +34,21 @@ stay covered here, or the next refactor quietly drops it again.
 import json
 import sys
 
-import numpy as np, onnx, yaml
-from onnx import helper as H, TensorProto as T
 from pathlib import Path
+
+import numpy as np
+import onnx
+import yaml
+from onnx import TensorProto as T
+from onnx import helper as H
 
 CONTINUOUS = "--continuous" in sys.argv
 ACCEL = "steps" if CONTINUOUS else "speedup"
 
 bank = Path("stubvoice-continuous" if CONTINUOUS else "stubvoice")
 bank.mkdir(exist_ok=True)
-voc = bank / "vocoder"; voc.mkdir(exist_ok=True)
+voc = bank / "vocoder"
+voc.mkdir(exist_ok=True)
 MEL, HOP, SR = 128, 512, 44100
 
 
@@ -59,6 +64,7 @@ def write_phonemes(path, names):
         return path.with_suffix(".json").name
     path.write_text("\n".join(names) + "\n")
     return path.name
+
 
 # ---- acoustic: tokens, durations, f0, speedup (+ the variance curves) -> mel
 # The four variance inputs are declared because a bank that wants them is the
@@ -105,7 +111,8 @@ graph = H.make_graph(
      H.make_tensor("ax01", T.INT64, [2], [0, 1]),
      H.make_tensor("scale", T.FLOAT, [1], [0.001])])
 m = H.make_model(graph, opset_imports=[H.make_opsetid("", 13)])
-onnx.checker.check_model(m); onnx.save(m, bank / "acoustic.onnx")
+onnx.checker.check_model(m)
+onnx.save(m, bank / "acoustic.onnx")
 
 # ---- vocoder: mel, f0 -> waveform [1, T*HOP]
 nodes = [
@@ -127,7 +134,8 @@ graph = H.make_graph(
      H.make_tensor("flat", T.INT64, [2], [1, -1]),
      H.make_tensor("tiny", T.FLOAT, [1], [0.0001])])
 m = H.make_model(graph, opset_imports=[H.make_opsetid("", 13)])
-onnx.checker.check_model(m); onnx.save(m, voc / "vocoder.onnx")
+onnx.checker.check_model(m)
+onnx.save(m, voc / "vocoder.onnx")
 
 # ---- config, phonemes, dictionary (ARPAbet-ish, lowercase like real EN banks)
 common = dict(sample_rate=SR, hop_size=HOP, win_size=2048, fft_size=2048,

@@ -11,12 +11,14 @@ What it is for: everything about a sung line that is decided *before* the
 neural model sees it. Whether the syllables land on the beats you meant, where
 the melismata hold, whether the phrasing breathes in the right places, how the
 portamento and vibrato read at this tempo. All of that is computed by the same
-code that feeds the voicebank -- `phonemize()` and `f0_curve()` in sing.py --
+code that feeds the voicebank -- `phonemes.phonemize()` and `sing.f0_curve()` --
 so a mistake audible here is a mistake that would survive into the real render,
 and it is audible in three seconds instead of three minutes.
 
 What it is not for: judging the voice. Timbre, diction, and the whole question
-of whether the words are intelligible belong to the voicebank.
+of whether the words are intelligible belong to the voicebank. This module
+supplies only the timbre, and the letter-to-sound rules that stand in for a
+bank's dictionary.
 
 Words are phonemised by letter-to-sound rules rather than a dictionary, since
 there is no bank to supply one. English spelling being what it is, expect the
@@ -77,7 +79,11 @@ DIGRAPH_VOWELS = {
     "ur": "er", "ar": "aa", "or": "ao",
 }
 SINGLE_VOWELS = {"a": "ae", "e": "eh", "i": "ih", "o": "aa", "u": "ah", "y": "ih"}
-MAGIC_E = {"a": "ey", "e": "iy", "i": "ay", "o": "ow", "u": "uw"}
+# Keyed by the short phoneme rather than by the letter it came from. Keying it
+# by letter meant inverting SINGLE_VOWELS to get back there, and that map is not
+# injective -- "y" also spells "ih" and overwrote "i" -- so "time" and "shine"
+# came out with a short i and the rule never fired for that vowel at all.
+MAGIC_E = {"ae": "ey", "eh": "iy", "ih": "ay", "aa": "ow", "ah": "uw"}
 DIGRAPH_CONSONANTS = {"ch": "ch", "sh": "sh", "th": "th", "ph": "f", "wh": "w",
                       "ck": "k", "ng": "ng", "qu": "k", "gh": "g"}
 SINGLE_CONSONANTS = {"b": "b", "c": "k", "d": "d", "f": "f", "g": "g", "h": "hh",
@@ -130,9 +136,8 @@ def letters_to_phonemes(word):
 
     if silent_e:
         for j in range(len(out) - 1, -1, -1):
-            base = {v: k for k, v in SINGLE_VOWELS.items()}.get(out[j])
-            if base in MAGIC_E:
-                out[j] = MAGIC_E[base]
+            if out[j] in MAGIC_E:
+                out[j] = MAGIC_E[out[j]]
                 break
     # collapse doubled consonants: "blossom" is not [s][s]
     dedup = [p for k, p in enumerate(out) if k == 0 or p != out[k - 1] or p in VOWELS]

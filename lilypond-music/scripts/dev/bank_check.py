@@ -44,6 +44,8 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
 sys.path.insert(0, str(SCRIPTS))
 
+from errors import cli                                     # noqa: E402
+
 # A note whose body sits further than this from the written pitch is not
 # expressive, it is wrong: a semitone of scoop would be an unusual singer, and
 # `--literal-pitch` has no business departing from the score at all.
@@ -187,7 +189,7 @@ def main():
     print(f"bank: {bank}")
     tmp = Path(tempfile.mkdtemp(prefix="bank-check-"))
 
-    voice = declared(bank, args.vocoder)
+    declared(bank, args.vocoder)
 
     print("\n  singing it")
     proc, wav = sing(args.score, bank, args.vocoder, tmp / "sung", args.steps)
@@ -264,4 +266,4 @@ def finish(tmp, keep):
 
 
 if __name__ == "__main__":
-    main()
+    cli(main, "bank_check.py")

@@ -1,9 +1,17 @@
 __pycache__/
 *.pyc
 
-# Nothing in songs/ is ignored any more: the dry stems are kept as flac (13 MB,
-# bit-identical to the wavs they came from) because a re-render is a different
-# take -- diffusion is unseeded -- so they are the source, not an intermediate.
-
 # render.py's default output directory, and anything like it.
 out/
+
+# Voicebanks and vocoder packages are never committed. They are third-party
+# model weights: the community vocoders are CC BY-NC-SA 4.0 and the English
+# DiffSinger banks are all non-commercial, several of them explicitly
+# no-redistribution. Unpack one wherever you like and point --voice at it.
+*.oudep
+*.onnx
+voices/
+
+# Nothing in songs/ is ignored: the dry stems are kept as flac (13 MB,
+# bit-identical to the wavs they came from) because a re-render is a different
+# take -- diffusion is unseeded -- so they are the source, not an intermediate.

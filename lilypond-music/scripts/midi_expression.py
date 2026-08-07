@@ -29,6 +29,10 @@ exactly why it is not applied everywhere. A hairpin whose notes are short enough
 for velocity to shape is left alone entirely; expression is spent only where
 velocity cannot reach, on hairpins dominated by one long note.
 
+The file itself is read through `smf.py`, shared with `midi_timing` and
+`midi_split`; the event walk below is this module's own, because it is the only
+one that has to write events back out.
+
     from midi_expression import parse_hairpins, add_expression
     staves, spans = parse_hairpins(lilypond_stderr)
     add_expression("score.midi", "expressive.midi", spans_by_track)
@@ -37,6 +41,8 @@ velocity cannot reach, on hairpins dominated by one long note.
 import re
 import struct
 from fractions import Fraction
+
+import smf
 
 STAFF_RE = re.compile(r"@STAFF (\d+)")
 HP_RE = re.compile(r"@HP (\d+) (-?\d+) (-?\d+(?:/\d+)?) (-?\d+(?:/\d+)?) (-?\d+)")
@@ -74,25 +80,6 @@ def parse_hairpins(text):
     return len(staves), [merged[k] for k in sorted(merged)]
 
 
-def _read_varlen(data, i):
-    val = 0
-    while True:
-        b = data[i]
-        i += 1
-        val = (val << 7) | (b & 0x7F)
-        if not b & 0x80:
-            return val, i
-
-
-def _write_varlen(value):
-    out = [value & 0x7F]
-    value >>= 7
-    while value:
-        out.append((value & 0x7F) | 0x80)
-        value >>= 7
-    return bytes(reversed(out))
-
-
 def _parse_track(data, start, end):
     """Explode one MTrk body into absolute-time events plus its notes.
 
@@ -103,7 +90,7 @@ def _parse_track(data, start, end):
     i, tick, status = start, 0, None
     channel = None
     while i < end:
-        delta, i = _read_varlen(data, i)
+        delta, i = smf.read_varlen(data, i)
         tick += delta
         b = data[i]
         if b & 0x80:
@@ -113,13 +100,13 @@ def _parse_track(data, start, end):
         if status == 0xFF:
             meta = data[i]
             i += 1
-            length, i = _read_varlen(data, i)
+            length, i = smf.read_varlen(data, i)
             i += length
             if meta == 0x2F:                     # end of track, re-added on write
                 continue
             events.append((tick, 0, bytes([status]) + data[begin:i]))
         elif status in (0xF0, 0xF7):
-            length, i = _read_varlen(data, i)
+            length, i = smf.read_varlen(data, i)
             i += length
             events.append((tick, 0, bytes([status]) + data[begin:i]))
         else:
@@ -141,11 +128,11 @@ def _parse_track(data, start, end):
 def _write_track(events):
     body, last = bytearray(), 0
     for tick, _order, raw in events:
-        body += _write_varlen(tick - last)
+        body += smf.write_varlen(tick - last)
         body += raw
         last = tick
     body += b"\x00\xff\x2f\x00"
-    return b"MTrk" + struct.pack(">I", len(body)) + bytes(body)
+    return smf.MTRK + struct.pack(">I", len(body)) + bytes(body)
 
 
 def _ramp(channel, t0, t1, v0, v1, step):
@@ -185,23 +172,25 @@ def add_expression(midi_path, out_path, spans_by_track, depth=0.4,
 
     Returns a list of the notes actually shaped, for reporting.
     """
-    data = open(midi_path, "rb").read()
-    fmt, ntrks, division = struct.unpack(">HHH", data[8:14])
-
-    chunks, pos = [], 14
-    while pos < len(data) - 8:
-        length = struct.unpack(">I", data[pos + 4:pos + 8])[0]
-        chunks.append((data[pos:pos + 4], pos + 8, pos + 8 + length, data[pos:pos + 8 + length]))
-        pos += 8 + length
+    with open(midi_path, "rb") as fh:
+        data = fh.read()
+    _fmt, _ntracks, division = smf.header(data, str(midi_path))
 
     step = max(int(division / steps_per_quarter), 1)
     min_note = min_note_quarters * division
     glide = max(int(round(glide_quarters * division)), step)
-    out, shaped = bytearray(data[:14]), []
+    out, shaped = bytearray(data[:smf.HEADER_BYTES]), []
 
-    for index, (kind, start, end, blob) in enumerate(chunks):
-        spans = spans_by_track.get(index)
-        if kind != b"MTrk" or not spans:
+    # Keys are the track's position among the MTrk chunks, which is what
+    # `midi_split.split_tracks` numbers by. Counting all chunks instead would
+    # agree on every file LilyPond writes and disagree on one that carries
+    # anything else, and the symptom would be expression on the wrong part.
+    index = -1
+    for kind, start, end, blob in smf.chunks(data):
+        if kind == smf.MTRK:
+            index += 1
+        spans = spans_by_track.get(index) if kind == smf.MTRK else None
+        if not spans:
             out += blob
             continue
 
@@ -249,5 +238,6 @@ def add_expression(midi_path, out_path, spans_by_track, depth=0.4,
         events = sorted(events + added, key=lambda e: (e[0], e[1]))
         out += _write_track(events)
 
-    open(out_path, "wb").write(bytes(out))
+    with open(out_path, "wb") as fh:
+        fh.write(bytes(out))
     return shaped

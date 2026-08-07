@@ -308,7 +308,11 @@ def find_plugin(bank_dir, entries=None):
     for path in cands:
         try:
             got = agreement(Phonemizer.from_plugin(path), entries)
-        except Exception:                             # noqa: BLE001 -- next one
+        except (OSError, ValueError, zipfile.BadZipFile):
+            # A .dll near the bank that is not a phonemizer plugin, or is one
+            # with no dictionary in it, is simply not a candidate. Narrowly, so
+            # that a bug in the reader surfaces instead of quietly costing the
+            # bank its plugin.
             continue
         score = got[0] / got[1] if got and got[1] >= AGREEMENT_MINIMUM else 0.0
         if score > best_score:

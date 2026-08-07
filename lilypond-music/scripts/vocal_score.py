@@ -33,6 +33,9 @@ from fractions import Fraction
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from errors import SkillError, cli                         # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 LYRICS_ILY = HERE.parent / "assets" / "lyrics.ily"
 
@@ -44,6 +47,10 @@ TYPES = [
     (4, "whole"), (2, "half"), (1, "quarter"), (Fraction(1, 2), "eighth"),
     (Fraction(1, 4), "16th"), (Fraction(1, 8), "32nd"), (Fraction(1, 16), "64th"),
 ]
+# (actual, normal) ratios tried in order, so an ordinary note is never reported
+# as a tuplet of itself. Each normal is the largest power of two below its
+# actual, which is what "3 in the time of 2" and "7 in the time of 4" mean.
+TUPLETS = [(1, 1), (3, 2), (5, 4), (6, 4), (7, 4), (9, 8), (11, 8), (13, 8)]
 SHARP_SPELL = [("C", 0), ("C", 1), ("D", 0), ("D", 1), ("E", 0), ("F", 0),
                ("F", 1), ("G", 0), ("G", 1), ("A", 0), ("A", 1), ("B", 0)]
 FLAT_SPELL = [("C", 0), ("D", -1), ("D", 0), ("E", -1), ("E", 0), ("F", 0),
@@ -79,7 +86,7 @@ def instrument(score, work):
          "-o", str(work / "probe"), str(score)],
         capture_output=True, text=True)
     if proc.returncode != 0 and "@NOTE" not in proc.stderr:
-        sys.exit(f"lilypond failed:\n{proc.stderr[-2000:]}")
+        raise SkillError(f"lilypond failed:\n{proc.stderr[-2000:]}")
     return proc.stderr
 
 
@@ -191,7 +198,7 @@ def tempo_map(events):
             continue
         out.append((when, qpm))
     if not out:
-        return [(0.0, 60.0)]
+        return [[0.0, 60.0]]
     if out[0][0] > 0:
         out.insert(0, (0.0, out[0][1]))
     return [[w, q] for w, q in out]
@@ -253,14 +260,29 @@ def assemble(data, line):
 # ------------------------------------------------------------------ MusicXML
 
 def note_type(dur):
-    """(type, dots) for a duration in whole notes, or (None, 0) if unnotatable."""
+    """How a duration in whole notes is printed: (type, dots, actual, normal).
+
+    `actual`/`normal` are the tuplet ratio -- 3 and 2 for a triplet -- and are
+    1, 1 for an ordinary note. Both are needed together: MusicXML states a
+    tuplet as the *plain* notehead it is drawn with plus a
+    `<time-modification>` saying how many fit in the time of how many, so a
+    triplet quaver is an `eighth` three-in-the-time-of-two and not a duration
+    of its own. Emitting the duration alone leaves an importer with a notehead
+    it cannot choose, which is what used to happen to every tuplet here.
+
+    Returns (None, 0, 1, 1) for a length no notehead spells, rather than
+    rounding to the nearest one -- the `<duration>` is exact regardless, and a
+    wrong notehead is worse than none.
+    """
     d = Fraction(dur).limit_denominator(3360)
-    for base, name in TYPES:
-        b = Fraction(base) / 4
-        for dots in (0, 1, 2, 3):
-            if d == b * (2 - Fraction(1, 2 ** dots)):
-                return name, dots
-    return None, 0
+    for actual, normal in TUPLETS:
+        scaled = d * actual / normal
+        for base, name in TYPES:
+            b = Fraction(base) / 4
+            for dots in (0, 1, 2, 3):
+                if scaled == b * (2 - Fraction(1, 2 ** dots)):
+                    return name, dots, actual, normal
+    return None, 0, 1, 1
 
 
 def sub(parent, tag, text=None, **attrs):
@@ -286,11 +308,15 @@ def add_note(measure, dur, pitch=None, fifths=0, syllable=None, syllabic=None,
     if tie:
         ET.SubElement(n, "tie", {"type": tie})
     sub(n, "voice", 1)
-    kind, dots = note_type(dur)
+    kind, dots, actual, normal = note_type(dur)
     if kind:
         sub(n, "type", kind)
         for _ in range(dots):
             ET.SubElement(n, "dot")
+    if actual != normal:
+        mod = sub(n, "time-modification")
+        sub(mod, "actual-notes", actual)
+        sub(mod, "normal-notes", normal)
     if syllable:
         lyr = sub(n, "lyric", number="1")
         sub(lyr, "syllabic", syllabic or "single")
@@ -464,10 +490,11 @@ def main():
 
     data = parse(instrument(score, work))
     if not data["line_voice"]:
-        sys.exit("no lyrics found in this score -- nothing to sing.\n"
-                 "A sung line needs a \\new Lyrics attached to a named Voice, e.g.\n"
-                 '  \\new Staff \\new Voice = "singer" \\voicePart\n'
-                 '  \\new Lyrics \\lyricsto "singer" \\voiceWords')
+        raise SkillError(
+            "no lyrics found in this score -- nothing to sing.\n"
+            "A sung line needs a \\new Lyrics attached to a named Voice, e.g.\n"
+            '  \\new Staff \\new Voice = "singer" \\voicePart\n'
+            '  \\new Lyrics \\lyricsto "singer" \\voiceWords')
 
     # `tempo` stays for anything that only wants one number; `tempo_map` is
     # the truth, and it is what sing.py places notes with.
@@ -513,4 +540,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    cli(main, "vocal_score.py")

@@ -308,7 +308,10 @@ glance at a thumbnail.
 - `scripts/sing.py` -- renders those with a DiffSinger voicebank through
   onnxruntime, or with the built-in preview voice (`--preview`).
   `--inspect` prints everything a bank declares, which is where to start with an
-  unfamiliar one.
+  unfamiliar one. It is the pitch curve and the model calls; the bank itself is
+  `scripts/voicebank.py`, turning words and notes into a phoneme timeline is
+  `scripts/phonemes.py`, and score moments to seconds is
+  `scripts/score_time.py`.
 - `scripts/sing_ensemble.py` -- one bank per part for a whole score: renders
   them all, reports what each bank used, writes a stem each, and mixes them
   into an a cappella track. The one command for choral and close-harmony work.
@@ -321,11 +324,14 @@ glance at a thumbnail.
   (dictionary plus neural G2P) without OpenUtau. Run it directly
   (`python3 scripts/phonemizer.py ~/voices/mybank lanterns drift`) to see how a
   bank will pronounce a word, and whether that pronunciation is a guess.
-- `scripts/dev/selftest.py` -- runs the whole pipeline against a score written
-  to break it and checks 80-odd invariants, against stub banks in both of the
-  export conventions real banks use. Run it after changing any of the above;
-  `--video` includes playhead verification, `--voice` uses a real bank instead
-  of a stub.
+- `scripts/dev/test_units.py` -- 90-odd unit tests over the pure functions, in
+  under a second and with no lilypond, ffmpeg or voicebank needed. The fastest
+  way to find out whether a change broke something, and the one that names what.
+- `scripts/dev/selftest.py` -- runs those first, then the whole pipeline against
+  a score written to break it, checking 180-odd invariants in total against stub
+  banks in both of the export conventions real banks use. Run it after changing
+  any of the above; `--video` includes playhead verification, `--voice` uses a
+  real bank instead of a stub.
 - `scripts/dev/bank_check.py` -- qualifies one voicebank: what it declares,
   which of its models the pipeline actually fed, where its pronunciations came
   from, and measured pitch and vowel placement on a rendered line. The first

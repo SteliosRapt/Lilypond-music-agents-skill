@@ -64,16 +64,29 @@ with its name recorded, never fed a guess.
 """
 
 import json
+import sys
+from pathlib import Path
 
 import numpy as np
 
-from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from errors import onnx_errors                             # noqa: E402
 
 
 def _load_yaml(path):
     import yaml
     with open(path, encoding="utf-8") as fh:
         return yaml.safe_load(fh) or {}
+
+
+def _load_failures():
+    """What opening a predictor folder can fail with, and nothing wider.
+
+    Built when it is needed rather than at import, so `sing.py --preview` can
+    import nothing this file depends on.
+    """
+    import yaml
+    return (OSError, ValueError, yaml.YAMLError) + onnx_errors()
 
 
 def resample_curve(curve, frames):
@@ -557,6 +570,11 @@ def load_predictors(bank_dir, onnxruntime=None, opts=None, voice_mode=None,
                              f"{', '.join(missing)} -- ignoring the folder")
                 continue
             found[key] = model
-        except Exception as exc:                      # noqa: BLE001 -- reported
+        except _load_failures() as exc:
+            # A predictor that will not load is reported and skipped, because a
+            # bank with a broken dsdur still sings. The set is what a missing
+            # file, an unreadable config and a rejected model actually raise --
+            # a TypeError here would be a bug in this file, and swallowing it
+            # would hide it behind "could not be loaded".
             notes.append(f"{folder} could not be loaded: {str(exc)[:120]}")
     return Predictors(notes=notes, **found)

@@ -5,6 +5,10 @@
     python3 scripts/dev/selftest.py --video      # and the video, with sync verification
     python3 scripts/dev/selftest.py --voice ~/voices/tiger --vocoder ~/voices/pc_nsf_hifigan
 
+It opens by running `dev/test_units.py` in-process -- the unit tests over the
+pure functions, which take under a second and name whatever they break -- and
+counts those results in its own total, so this stays the one command to run.
+
 `dev/torture.ly` is the fixture: a pickup, mid-score metre and tempo changes,
 ties across barlines, a melisma, `_`, two verses, a bar filled exactly by one
 whole note, a hairpin over a held note, and a word no small dictionary has.
@@ -22,6 +26,7 @@ Exit status is 0 only if every check passed.
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -48,6 +53,34 @@ def run(cmd, **kw):
         print(proc.stdout[-3000:])
         print(proc.stderr[-3000:])
     return proc
+
+
+# --------------------------------------------------------------- unit tests
+
+def test_units():
+    """`dev/test_units.py`, run in-process so its results join the total.
+
+    First, because it is the fastest feedback in the repository -- under a
+    second, no lilypond, no ffmpeg -- and because a failure here names the
+    function that broke, which nothing else below does.
+    """
+    print("\nunit tests (dev/test_units.py)")
+    import unittest
+
+    import test_units as units
+
+    suite = unittest.defaultTestLoader.loadTestsFromModule(units)
+    cases = [t for group in suite for t in group]
+    result = unittest.TestResult()
+    suite.run(result)
+
+    bad = {t.id(): why for t, why in result.failures + result.errors}
+    for case in cases:
+        name = (case.shortDescription()
+                or case.id().rsplit(".", 1)[-1].replace("_", " "))
+        check(f"{type(case).__name__}: {name}", case.id() not in bad,
+              bad.get(case.id(), "").strip().splitlines()[-1][:70]
+              if case.id() in bad else "")
 
 
 # ---------------------------------------------------------------- extraction
@@ -174,22 +207,18 @@ def test_mix_errors(work):
 
 
 def test_eq_parsing():
+    """--eq across several parts at once. The single stages are unit-tested."""
     print("\nEQ specification")
     import render
-    parts = [{"index": 1, "name": "koto", "program": 107},
-             {"index": 2, "name": "drums", "program": 0}]
+    parts = [{"index": 1, "name": "koto", "program": 107, "channel": 0,
+              "notes": 40},
+             {"index": 2, "name": "drums", "program": 0, "channel": 9,
+              "notes": 60}]
     got = render.parse_eq("koto=warm|2500+3/1.4|hp:80,drums=lp:9000", parts)
     check("a preset expands to its filters",
           any("equalizer=f=250" in f for f in got[1]))
-    check("a bell keeps its frequency, gain and Q",
-          "equalizer=f=2500:t=q:w=1.40:g=3.00" in got[1])
-    check("a cut is read as a cut",
-          render.eq_stage("400-3") == ["equalizer=f=400:t=q:w=1.00:g=-3.00"],
-          str(render.eq_stage("400-3")))
     check("stages chain in order", got[1][-1] == "highpass=f=80")
     check("a second part is independent", got[2] == ["lowpass=f=9000"])
-    check("shelves use a shelf filter, not a 0.7 Hz bell",
-          all("t=h" not in f for fs in render.EQ_PRESETS.values() for f in fs))
 
 
 # ------------------------------------------------------------------- singing
@@ -214,6 +243,23 @@ def test_singing(work, source, voice, vocoder):
         check("the preview covers the whole line", wav_seconds(preview) > 15,
               f"{wav_seconds(preview):.1f}s")
 
+    # `--preview` is the one path that must work on a machine with none of the
+    # singing dependencies, which is what makes every onnxruntime import in
+    # this tree lazy. Nothing else notices when one stops being.
+    blocker = work / "no-onnx"
+    blocker.mkdir(parents=True, exist_ok=True)
+    (blocker / "onnxruntime.py").write_text(
+        'raise ImportError("blocked by selftest.py")\n')
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(
+        [str(blocker)] + ([env["PYTHONPATH"]] if env.get("PYTHONPATH") else []))
+    proc = run([sys.executable, SCRIPTS / "sing.py", vocals, "--preview",
+                "-o", work / "sing-bare"], env=env)
+    check("--preview still runs with onnxruntime unimportable",
+          proc.returncode == 0,
+          (proc.stderr or proc.stdout).strip().splitlines()[-1][:70]
+          if proc.returncode else "")
+
     proc = run([sys.executable, SCRIPTS / "sing.py", vocals, "--voice", voice,
                 "-o", work / "sing", "--steps", "4"]
                + (["--vocoder", vocoder] if vocoder else []))
@@ -225,13 +271,14 @@ def test_singing(work, source, voice, vocoder):
     check("dspitch was used", "dspitch" in proc.stdout)
     check("no model was found and then silently skipped",
           "declined this line" not in proc.stdout,
-          [l for l in proc.stdout.splitlines() if "declined" in l][:1])
+          [out for out in proc.stdout.splitlines() if "declined" in out][:1])
     # Where the words came from is not decoration: a bank whose phonemizer
     # plugin was not found, or was found and belongs to another language, sings
     # fluent nonsense and nothing else in the output says so.
     check("the run says where pronunciations came from",
           "  words   " in proc.stdout,
-          [l for l in proc.stdout.splitlines() if l.startswith("  words")][:1])
+          [out for out in proc.stdout.splitlines()
+           if out.startswith("  words")][:1])
 
     proc = run([sys.executable, SCRIPTS / "sing.py", vocals, "--voice", voice,
                 "-o", work / "literal", "--steps", "4",
@@ -276,7 +323,8 @@ def test_ensemble(work, voices, vocoder):
     check("it reports what each bank used", "models  acoustic" in proc.stdout)
     check("levels are measured, not assumed", "dBFS while singing" in proc.stdout)
     check("--gain and --pan reach the mix", "-2" in proc.stdout and "+0.40" in proc.stdout,
-          [l for l in proc.stdout.splitlines() if "dBFS while singing" in l][:2])
+          [out for out in proc.stdout.splitlines()
+           if "dBFS while singing" in out][:2])
 
     for flag, expect, what in (
             (["--voice", "nosuchpart=" + str(voices[0])], "no part named",
@@ -386,6 +434,8 @@ def main():
     ap.add_argument("--vocoder")
     ap.add_argument("--keep", action="store_true", help="keep the working directory")
     args = ap.parse_args()
+
+    test_units()
 
     tmp = Path(tempfile.mkdtemp(prefix="lilypond-selftest-"))
     print(f"working in {tmp}")
