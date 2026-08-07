@@ -45,9 +45,13 @@ Verified working, with real files:
   on and 1.1 cents with `--literal-pitch`; every vowel starts exactly on its
   written note onset either way.
 - **The vocoder on its own**, by analysis-resynthesis through
-  `scripts/dev/vocoder_resynth_check.py`: mel correlation 0.978 against the
-  source signal, pitch preserved to a median 1.7 cents. The vocoder half of the
-  contract is confirmed, not assumed.
+  `scripts/dev/vocoder_resynth_check.py`: on `dev/torture.ly`, mel correlation
+  0.963 against the mel it was handed (0.944, 0.967 and 0.977 across the three
+  phrases) and pitch preserved to a median 3.1 cents. The vocoder half of the
+  contract is confirmed, not assumed -- and the check now prints those numbers
+  and exits non-zero below 0.90, rather than asking you to listen. Two earlier
+  drafts of these notes quoted a single phrase each, which is why one said 0.944
+  and another 0.978.
 - **Three more banks, since**: CANARY v106, TRITON v106 and LIEE MM 2.8, each
   downloaded from its own GitHub release and put through
   `scripts/dev/bank_check.py`. All four sing, place every vowel on its written

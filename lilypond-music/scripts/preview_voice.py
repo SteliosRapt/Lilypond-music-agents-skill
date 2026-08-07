@@ -11,12 +11,14 @@ What it is for: everything about a sung line that is decided *before* the
 neural model sees it. Whether the syllables land on the beats you meant, where
 the melismata hold, whether the phrasing breathes in the right places, how the
 portamento and vibrato read at this tempo. All of that is computed by the same
-code that feeds the voicebank -- `phonemize()` and `f0_curve()` in sing.py --
+code that feeds the voicebank -- `phonemes.phonemize()` and `sing.f0_curve()` --
 so a mistake audible here is a mistake that would survive into the real render,
 and it is audible in three seconds instead of three minutes.
 
 What it is not for: judging the voice. Timbre, diction, and the whole question
-of whether the words are intelligible belong to the voicebank.
+of whether the words are intelligible belong to the voicebank. This module
+supplies only the timbre, and the letter-to-sound rules that stand in for a
+bank's dictionary.
 
 Words are phonemised by letter-to-sound rules rather than a dictionary, since
 there is no bank to supply one. English spelling being what it is, expect the

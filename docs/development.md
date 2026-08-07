@@ -45,7 +45,7 @@ tests say:
 | pitch tracking with `dspitch` | `librosa.yin` vs written notes | median 4.3 cents, max 10.7 |
 | pitch tracking with `--literal-pitch` | same | median 1.1 cents, max 4.8 |
 | vowel onsets | selftest, both timing modes | every one exactly on a written onset |
-| vocoder resynthesis | `dev/vocoder_resynth_check.py` | 0.978 mel correlation, 1.7 cents |
+| vocoder resynthesis | `dev/vocoder_resynth_check.py` on `dev/torture.ly` | 0.963 mel correlation, 3.1 cents |
 | every bank still qualifies | `dev/bank_check.py` on TIGER, CANARY, TRITON | "no problems" on each, and LIEE with only its missing English plugin reported |
 
 `flake8 --max-line-length=100 --extend-ignore=E731` is clean across every
