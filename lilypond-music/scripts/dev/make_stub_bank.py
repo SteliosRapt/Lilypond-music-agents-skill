@@ -1,6 +1,7 @@
 """Build a fake DiffSinger bank: real ONNX graphs with the real I/O contract.
 
-    python3 scripts/dev/make_stub_bank.py
+    python3 scripts/dev/make_stub_bank.py               # the classic export
+    python3 scripts/dev/make_stub_bank.py --continuous  # the newer one
 
 Written so the pipeline can be tested end to end without a voicebank -- the
 graphs compute nonsense, but they declare exactly the inputs and outputs a real
@@ -8,21 +9,56 @@ bank declares, which is what catches shape, dtype and frame-arithmetic bugs.
 It found three of them.
 
 The bank it writes has all five models: the acoustic model and vocoder every
-bank ships, plus `dsdur/`, `dspitch/` and `dsvariance/` declaring the same
-tensors TIGER v102 declares. `dsvariance` is the reason this matters most --
-no bank to hand ships one, so these stubs are the only exercise that code path
-gets. Each predictor folder carries its own phoneme table, deliberately one
-phone shorter than the acoustic model's, because real banks differ that way
-and a predictor fed ids from the wrong table fails silently.
+bank ships, plus `dsdur/`, `dspitch/` and `dsvariance/`. Each predictor folder
+carries its own phoneme table, deliberately one phone shorter than the acoustic
+model's, because real banks differ that way and a predictor fed ids from the
+wrong table fails silently.
+
+TWO EXPORTS, NOT ONE
+--------------------
+Banks are exported by two different toolchain generations and they do not
+declare the same tensors. `--continuous` writes the newer one, and every
+difference below was found in a real bank rather than invented:
+
+    default (TIGER v102)          --continuous (CANARY/TRITON v106, LIEE 2.8)
+    speedup, int64                steps, int64
+    depth as a step count         depth as a fraction of max_depth (float)
+    phonemes.txt, id = line no.   phonemes.json, ids stated explicitly
+    variance curves out only      curves in *and* out, with a retake mask
+
+Both are written to different directories so the self-test can run against
+each. Everything the pipeline learned to handle by meeting a real bank has to
+stay covered here, or the next refactor quietly drops it again.
 """
+
+import json
+import sys
 
 import numpy as np, onnx, yaml
 from onnx import helper as H, TensorProto as T
 from pathlib import Path
 
-bank = Path("stubvoice"); bank.mkdir(exist_ok=True)
+CONTINUOUS = "--continuous" in sys.argv
+ACCEL = "steps" if CONTINUOUS else "speedup"
+
+bank = Path("stubvoice-continuous" if CONTINUOUS else "stubvoice")
+bank.mkdir(exist_ok=True)
 voc = bank / "vocoder"; voc.mkdir(exist_ok=True)
 MEL, HOP, SR = 128, 512, 44100
+
+
+def write_phonemes(path, names):
+    """One phoneme per line, or a json object of explicit ids.
+
+    The json form is not merely a different spelling: LIEE's ids start at 1,
+    so counting lines gives every phone the wrong token.
+    """
+    if CONTINUOUS:
+        path.with_suffix(".json").write_text(json.dumps(
+            {p: i + 1 for i, p in enumerate(names)}, indent=1))
+        return path.with_suffix(".json").name
+    path.write_text("\n".join(names) + "\n")
+    return path.name
 
 # ---- acoustic: tokens, durations, f0, speedup (+ the variance curves) -> mel
 # The four variance inputs are declared because a bank that wants them is the
@@ -41,9 +77,13 @@ nodes = [
     H.make_node("ReduceSum", ["tokens", "ax01"], ["tsum"], keepdims=1),
     H.make_node("Add", ["dsum", "tsum"], ["checksum"]),
     H.make_node("Squeeze", ["checksum", "ax01"], ["chk1"]),
-    H.make_node("Add", ["chk1", "speedup"], ["chk2"]),
+    H.make_node("Add", ["chk1", ACCEL], ["chk2"]),
     H.make_node("Cast", ["chk2"], ["chkf"], to=T.FLOAT),
 ]
+# `depth` only in the continuous export, and as a float there: the classic one
+# takes it as a step count, and the two are read from `max_depth` differently.
+if CONTINUOUS:
+    nodes.append(H.make_node("Mul", ["mel", "depth"], ["mel_depth"]))
 graph = H.make_graph(
     nodes, "acoustic",
     [H.make_tensor_value_info("tokens", T.INT64, [1, "N"]),
@@ -53,10 +93,13 @@ graph = H.make_graph(
      H.make_tensor_value_info("breathiness", T.FLOAT, [1, "T"]),
      H.make_tensor_value_info("voicing", T.FLOAT, [1, "T"]),
      H.make_tensor_value_info("tension", T.FLOAT, [1, "T"]),
-     H.make_tensor_value_info("speedup", T.INT64, [1])],
+     H.make_tensor_value_info(ACCEL, T.INT64, [1])] +
+    ([H.make_tensor_value_info("depth", T.FLOAT, [])] if CONTINUOUS else []),
     [H.make_tensor_value_info("mel", T.FLOAT, [1, "T", MEL]),
      H.make_tensor_value_info("variance_sum", T.FLOAT, [1, "T"]),
-     H.make_tensor_value_info("chkf", T.FLOAT, [1])],
+     H.make_tensor_value_info("chkf", T.FLOAT, [1])] +
+    ([H.make_tensor_value_info("mel_depth", T.FLOAT, [1, "T", MEL])]
+     if CONTINUOUS else []),
     [ones_mel,
      H.make_tensor("axm1", T.INT64, [1], [-1]),
      H.make_tensor("ax01", T.INT64, [2], [0, 1]),
@@ -90,12 +133,6 @@ onnx.checker.check_model(m); onnx.save(m, voc / "vocoder.onnx")
 common = dict(sample_rate=SR, hop_size=HOP, win_size=2048, fft_size=2048,
               num_mel_bins=MEL, mel_fmin=40, mel_fmax=16000,
               mel_base="10", mel_scale="slaney")
-(bank / "dsconfig.yaml").write_text(yaml.safe_dump(
-    dict(phonemes="phonemes.txt", acoustic="acoustic.onnx", vocoder="vocoder",
-         **common)))
-(voc / "vocoder.yaml").write_text(yaml.safe_dump(
-    dict(name="stub_hifigan", model="vocoder.onnx", **common)))
-
 vowels = ["aa", "ae", "ah", "ao", "aw", "ay", "eh", "er", "ey", "ih", "iy",
           "ow", "oy", "uh", "uw"]
 cons = {"b": "stop", "ch": "affricate", "d": "stop", "dh": "fricative",
@@ -105,7 +142,15 @@ cons = {"b": "stop", "ch": "affricate", "d": "stop", "dh": "fricative",
         "t": "stop", "th": "fricative", "v": "fricative", "w": "semivowel",
         "y": "semivowel", "z": "fricative", "zh": "fricative"}
 phones = ["SP", "AP"] + vowels + list(cons)
-(bank / "phonemes.txt").write_text("\n".join(phones) + "\n")
+phoneme_file = write_phonemes(bank / "phonemes.txt", phones)
+
+(bank / "dsconfig.yaml").write_text(yaml.safe_dump(
+    dict(phonemes=phoneme_file, acoustic="acoustic.onnx", vocoder="vocoder",
+         **({"use_continuous_acceleration": True, "use_variable_depth": True,
+             "max_depth": 0.6} if CONTINUOUS else {}),
+         **common)))
+(voc / "vocoder.yaml").write_text(yaml.safe_dump(
+    dict(name="stub_hifigan", model="vocoder.onnx", **common)))
 
 entries = {
     "lanterns": ["l", "ae", "n", "t", "er", "n", "z"],
@@ -205,7 +250,7 @@ pitch_inputs = [
     H.make_tensor_value_info("expr", T.FLOAT, [1, "n_frames"]),
     H.make_tensor_value_info("retake", T.BOOL, [1, "n_frames"]),
     H.make_tensor_value_info("spk_embed", T.FLOAT, [1, "n_frames", HIDDEN]),
-    H.make_tensor_value_info("speedup", T.INT64, []),
+    H.make_tensor_value_info(ACCEL, T.INT64, []),
 ]
 graph = H.make_graph(
     # a quarter-tone above the written line, so a caller that silently ignores
@@ -220,7 +265,7 @@ graph = H.make_graph(
      H.make_node("Add", ["nr", "note_midi"], ["notes_touched"]),
      H.make_node("Add", ["notes_touched", "nd"], ["notes_sum"]),
      H.make_node("Cast", ["ph_dur"], ["pd"], to=T.FLOAT),
-     H.make_node("Cast", ["speedup"], ["sp"], to=T.FLOAT),
+     H.make_node("Cast", [ACCEL], ["sp"], to=T.FLOAT),
      H.make_node("Mul", ["pd", "sp"], ["ph_touched"])],
     "pitch", pitch_inputs,
     [H.make_tensor_value_info("pitch_pred", T.FLOAT, [1, "n_frames"]),
@@ -236,7 +281,19 @@ save(H.make_model(graph, opset_imports=[H.make_opsetid("", 13)]),
 
 # dsvariance: linguistic(tokens, ph_dur) -> variance(four curves out)
 save(encoder("var_linguistic", ["ph_dur"]), bank / "dsvariance/files/linguistic.onnx")
+# In the newer export the four parameters are inputs as well as outputs: the
+# model is handed the curves as they stand and re-predicts the ones `retake`
+# marks. A caller that only knows how to read them back declines the model
+# entirely, which is what happened to LIEE's until this was covered.
+curve_inputs = ([H.make_tensor_value_info(p, T.FLOAT, [1, "n_frames"])
+                 for p in ("energy", "breathiness", "voicing", "tension")]
+                if CONTINUOUS else [])
+curve_nodes = ([H.make_node("Add", ["energy", "breathiness"], ["given"]),
+                H.make_node("Add", ["given", "voicing"], ["given2"]),
+                H.make_node("Add", ["given2", "tension"], ["given_sum"])]
+               if CONTINUOUS else [])
 graph = H.make_graph(
+    curve_nodes +
     [H.make_node("Mul", ["pitch", "small"], ["energy_pred"]),
      H.make_node("Mul", ["expr", "small"], ["breathiness_pred"]),
      H.make_node("Mul", ["pitch", "smaller"], ["voicing_pred"]),
@@ -246,7 +303,7 @@ graph = H.make_graph(
      H.make_node("ReduceMean", ["spk_embed"], ["spk"], axes=[-1], keepdims=0),
      H.make_node("ReduceMean", ["encoder_out"], ["enc"], axes=[-1], keepdims=0),
      H.make_node("Cast", ["ph_dur"], ["pd"], to=T.FLOAT),
-     H.make_node("Cast", ["speedup"], ["sp"], to=T.FLOAT),
+     H.make_node("Cast", [ACCEL], ["sp"], to=T.FLOAT),
      H.make_node("Mul", ["pd", "sp"], ["ph_touched"])],
     "variance",
     [H.make_tensor_value_info("encoder_out", T.FLOAT, [1, "n_tokens", HIDDEN]),
@@ -255,7 +312,7 @@ graph = H.make_graph(
      H.make_tensor_value_info("expr", T.FLOAT, [1, "n_frames"]),
      H.make_tensor_value_info("retake", T.BOOL, [1, "n_frames", 4]),
      H.make_tensor_value_info("spk_embed", T.FLOAT, [1, "n_frames", HIDDEN]),
-     H.make_tensor_value_info("speedup", T.INT64, [])],
+     H.make_tensor_value_info(ACCEL, T.INT64, [])] + curve_inputs,
     [H.make_tensor_value_info("energy_pred", T.FLOAT, [1, "n_frames"]),
      H.make_tensor_value_info("breathiness_pred", T.FLOAT, [1, "n_frames"]),
      H.make_tensor_value_info("voicing_pred", T.FLOAT, [1, "n_frames"]),
@@ -275,11 +332,11 @@ save(H.make_model(graph, opset_imports=[H.make_opsetid("", 13)]),
 # tokenises with the wrong table has to be caught here rather than by ear.
 for folder, drop in (("dsdur", []), ("dspitch", ["zh"]), ("dsvariance", ["zh"])):
     files = bank / folder / "files"
-    (files / "phonemes.txt").write_text(
-        "\n".join(p for p in phones if p not in drop) + "\n")
+    name = write_phonemes(files / "phonemes.txt",
+                          [p for p in phones if p not in drop])
     np.ones(HIDDEN, np.float32).tofile(files / "speaker.emb")
     (bank / folder / "dsconfig.yaml").write_text(yaml.safe_dump(dict(
-        phonemes="files/phonemes.txt", linguistic="files/linguistic.onnx",
+        phonemes=f"files/{name}", linguistic="files/linguistic.onnx",
         hop_size=HOP, sample_rate=SR, speakers=["files/speaker"],
         **({"dur": "files/dur.onnx", "predict_dur": True} if folder == "dsdur" else
            {"pitch": "files/pitch.onnx", "use_expr": True, "use_note_rest": True}
@@ -289,4 +346,5 @@ for folder, drop in (("dsdur", []), ("dspitch", ["zh"]), ("dsvariance", ["zh"]))
             "predict_tension": True}))))
 
 print("stub bank written to", bank.resolve())
-print("  acoustic + vocoder + dsdur + dspitch + dsvariance")
+print(f"  acoustic + vocoder + dsdur + dspitch + dsvariance, "
+      f"{'continuous-acceleration' if CONTINUOUS else 'classic'} export")

@@ -12,13 +12,22 @@ with the instrumental render without further alignment.
 
 WHAT A VOICEBANK IS
 -------------------
-A DiffSinger bank is a directory holding `dsconfig.yaml`, an `acoustic.onnx`,
-a `phonemes.txt` (one phoneme per line; the line number is its token id), a
-`dsdict*.yaml` grapheme-to-phoneme dictionary, and a separate vocoder package
-(usually nsf_hifigan) with its own config and ONNX. Banks are made for
-OpenUtau; this script drives the same files directly so nothing here needs a
-GUI. Point `--voice` at the bank directory and `--vocoder` at the vocoder
-directory (or drop the vocoder inside the bank as `vocoder/`).
+A DiffSinger bank is a directory holding `dsconfig.yaml`, an acoustic `.onnx`,
+a phoneme table, a `dsdict*.yaml` grapheme-to-phoneme dictionary, and a vocoder
+package with its own config and ONNX -- usually `dsvocoder/` inside the bank,
+sometimes an nsf_hifigan package outside it. Banks are made for OpenUtau; this
+script drives the same files directly so nothing here needs a GUI. Point
+`--voice` at the bank directory and, if the bank carries no vocoder,
+`--vocoder` at the vocoder directory.
+
+Little of that is uniform. The phoneme table is `phonemes.txt`, one per line
+with the line number as the token id, or `*.phonemes.json` with the ids stated;
+the acoustic model asks for `speedup` or for `steps`, and for `depth` as a step
+count or as a fraction; the dictionary holds ten thousand words or two hundred,
+with the rest coming from a phonemizer plugin that has to be the one for the
+language being sung. `references/singing-synthesis.md` section 8 is the
+catalogue of what varies, and `scripts/dev/bank_check.py` answers it for a
+specific bank.
 
 Almost every English bank is licensed for non-commercial use, and several
 forbid redistribution or synthesis of real people. Read the bank's terms; this
@@ -89,13 +98,26 @@ def die(msg):
     sys.exit(f"sing.py: {msg}")
 
 
-def load_yaml(path):
+def load_yaml(path, tolerant=False):
+    """Read a bank's yaml. `tolerant` returns None rather than raising.
+
+    Banks ship hand-edited dictionaries and not all of them parse: LIEE's
+    `dsdict-zh-yue.yaml` has one list item outdented by a space, which is a
+    parse error rather than a warning. That must not take down a scan of every
+    dictionary in the bank -- it is one language out of eighteen and the run is
+    almost certainly not singing in it. Configs are still read strictly.
+    """
     try:
         import yaml
     except ImportError:
         die("pyyaml is missing -- pip install pyyaml (or rerun scripts/setup.sh)")
-    with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except yaml.YAMLError:
+        if not tolerant:
+            raise
+        return None
 
 
 # --------------------------------------------------------------------------
@@ -161,48 +183,57 @@ class Voice:
                     "This bank needs its matching vocoder package.")
 
     def _load_phonemes(self, path):
+        """The bank's phoneme table, in either format banks use.
+
+        `phonemes.txt` is one phoneme per line and the line number is the token
+        id. LIEE and the other multi-language banks ship `*.phonemes.json`
+        instead, an object mapping phoneme to id -- and there the ids are not
+        the position in the file, so they have to be read rather than counted.
+        """
         if not path.exists():
             die(f"phoneme list {path} not found")
         if path.suffix.lower() == ".json":
-            return json.loads(path.read_text(encoding="utf-8"))
+            table = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(table, dict):
+                return {str(k): int(v) for k, v in table.items()}
+            return {str(p): i for i, p in enumerate(table)}
         lines = path.read_text(encoding="utf-8").splitlines()
         return {p.strip(): i for i, p in enumerate(lines) if p.strip()}
 
     def _load_dict(self):
         """Read dsdict*.yaml: phoneme types plus the word -> phonemes table."""
-        # TIGER keeps no dictionary at the bank root: the word list lives in
-        # dsdur/ and dspitch/ beside the predictors that use it. Search the
-        # whole tree, and prefer an explicitly English one.
-        cands = sorted(self.dir.rglob("dsdict*.yaml"))
-        preferred = ([p for p in cands if "-en." in p.name]
-                     + [p for p in cands if p.name == "dsdict.yaml"])
-        for path in (preferred + cands):
-            data = load_yaml(path) or {}
-            entries = {}
-            for e in data.get("entries", []) or []:
-                g = str(e.get("grapheme", "")).lower()
-                ph = e.get("phonemes") or e.get("phones") or []
-                if g and ph:
-                    entries.setdefault(g, [str(x) for x in ph])
-            symbols = {str(s["symbol"]): str(s.get("type", "")).lower()
-                       for s in (data.get("symbols") or []) if s.get("symbol")}
-            if entries:
-                self.dict_path = path
-                return symbols, entries
-        die("no usable dsdict*.yaml in the bank. English banks ship one; "
-            "without it there is no way to turn words into phonemes.")
+        import phonemizer as ph_mod
+        symbols, entries, path, unreadable = ph_mod.bank_dictionary(self.dir)
+        self.dict_path, self.unreadable_dicts = path, unreadable
+        if not entries:
+            die("no usable dsdict*.yaml in the bank. English banks ship one; "
+                "without it there is no way to turn words into phonemes."
+                + (f" ({', '.join(unreadable)} did not parse)" if unreadable else ""))
+        return symbols, entries
 
     def _load_phonemizer(self, plugin):
+        """The bank's phonemizer plugin, and how far it agrees with the bank.
+
+        The agreement is kept rather than merely used to choose, because it is
+        the number that says whether a bank has a usable pronunciation source
+        at all: a bank whose plugin is missing falls back to a few hundred
+        dsdict words plus letter-to-sound rules, and that is worth knowing
+        before listening to eleven seconds of it.
+        """
         import phonemizer as ph_mod
-        path = plugin or ph_mod.find_plugin(self.dir)
+        self.plugin_path, self.plugin_agreement = None, None
+        path = plugin or ph_mod.find_plugin(self.dir, self.entries)
         if not path:
             return None
         try:
-            return ph_mod.Phonemizer.from_plugin(path)
+            found = ph_mod.Phonemizer.from_plugin(path)
         except Exception as e:
             print(f"  ! could not read the phonemizer plugin {Path(path).name}: "
                   f"{str(e)[:120]}")
             return None
+        self.plugin_path = Path(path)
+        self.plugin_agreement = ph_mod.agreement(found, self.entries)
+        return found
 
     def _find_vocoder(self):
         named = self.cfg.get("vocoder")
@@ -230,6 +261,14 @@ class Voice:
             if isinstance(found, dict) and (found.get("model") or found.get("sample_rate")):
                 cfg = found
                 break
+        # openvpi's vocoder packages spell the mel band edges `mel_fmin` and
+        # `mel_fmax`; a bank shipping its own vocoder tends to spell them
+        # `fmin`/`fmax` (TIGER does). Without normalising, the compatibility
+        # check below compares a number against None and passes -- and that is
+        # the one check whose failure is noise rather than a worse voice.
+        for short, long in (("fmin", "mel_fmin"), ("fmax", "mel_fmax")):
+            if long not in cfg and short in cfg:
+                cfg[long] = cfg[short]
         model = cfg.get("model")
         path = (vdir / model) if model else None
         if path is None or not path.exists():
@@ -386,7 +425,10 @@ def inspect_bank(path, vocoder=None):
     # none at the root and one per predictor folder. Summarise them all, and
     # summarise rather than print -- these files run to 690 KB.
     for d in sorted(bank.rglob("dsdict*.yaml")):
-        data = load_yaml(d) or {}
+        data = load_yaml(d, tolerant=True)
+        if not isinstance(data, dict):
+            print(f"\n{d.relative_to(bank)}: ! not readable as yaml, skipped")
+            continue
         types = {}
         for s in (data.get("symbols") or []):
             types[str(s.get("type", "?"))] = types.get(str(s.get("type", "?")), 0) + 1
@@ -399,8 +441,13 @@ def inspect_bank(path, vocoder=None):
     ph = bank / str((load_yaml(cfg_path) or {}).get("phonemes", "phonemes.txt")) \
         if cfg_path.exists() else None
     if ph and ph.exists():
-        lines = [l for l in ph.read_text(encoding="utf-8").splitlines() if l.strip()]
-        print(f"\n{ph.name}: {len(lines)} phonemes, first 12: {' '.join(lines[:12])}")
+        if ph.suffix.lower() == ".json":
+            table = json.loads(ph.read_text(encoding="utf-8"))
+            names = list(table) if isinstance(table, dict) else [str(p) for p in table]
+        else:
+            names = [l.strip() for l in ph.read_text(encoding="utf-8").splitlines()
+                     if l.strip()]
+        print(f"\n{ph.name}: {len(names)} phonemes, first 12: {' '.join(names[:12])}")
 
     embeddings = sorted(bank.rglob("*.emb"))
     for emb in embeddings:
@@ -916,9 +963,17 @@ def render_phrase(voice, timeline, notes, clock, steps, variance, depth=1.0,
         feed["steps"] = shaped("steps", steps, np.int64)
     if "depth" in avail:
         # Shallow diffusion: depth is where denoising starts, capped by the
-        # bank's max_depth, and it has to be a whole number of speedup strides.
+        # bank's max_depth in whichever unit that bank states it.
         if "float" in meta["depth"].type:
-            feed["depth"] = shaped("depth", depth, np.float32)
+            # A `use_continuous_acceleration` export takes depth as a fraction
+            # of the schedule and states its own ceiling: CANARY and TRITON are
+            # exported with `max_depth: 0.6` and were never trained to denoise
+            # from further back than that. The integer export below states the
+            # same ceiling as a step count, which is why the two branches read
+            # `max_depth` so differently.
+            cap = float(voice.cfg.get("max_depth", 1.0))
+            feed["depth"] = shaped("depth", min(depth, cap if 0 < cap <= 1.0 else 1.0),
+                                   np.float32)
         else:
             cap = int(voice.cfg.get("max_depth", 1000))
             d = min(int(depth * 1000) if depth <= 1.0 else int(depth), cap)
@@ -1099,6 +1154,20 @@ def main():
             chosen = args.voice_mode or voice.speakers[0]
             print(f"  modes   {', '.join(Path(s).name for s in voice.speakers)}"
                   f"  -> singing as {Path(chosen).name}")
+        if voice.plugin_path is None:
+            print(f"  words   no phonemizer plugin matches this bank: "
+                  f"{len(voice.entries)} dsdict words, then letter-to-sound rules")
+        else:
+            agreed = voice.plugin_agreement
+            import phonemizer as ph_mod
+            enough = agreed and agreed[1] >= ph_mod.AGREEMENT_MINIMUM
+            print(f"  words   {voice.plugin_path.name}"
+                  + (f", agreeing with the bank's own dictionary on "
+                     f"{100 * agreed[0] / agreed[1]:.0f}% of {agreed[1]} words"
+                     if enough else ", too few words in common with the bank's "
+                     "dictionary to check it against"))
+        for name in getattr(voice, "unreadable_dicts", []):
+            print(f"  ! {name} is not valid yaml and was skipped")
         for note in voice.predictors.notes:
             print(f"  ! {note}")
         print(f"  models  acoustic + vocoder, plus {voice.predictors.summary()}")
@@ -1158,6 +1227,8 @@ def main():
                 print(f"  {folder} disabled by flag: {what}")
             elif model is not None:
                 print(f"  ! {folder} is present but declined this line: {what}")
+                if model.declined:
+                    print(f"    {model.declined}")
         for name, phones in predictors.unknown_phonemes().items():
             print(f"  ! {name} has no token for {', '.join(phones)}; "
                   "sung as silence in that model's view of the line")

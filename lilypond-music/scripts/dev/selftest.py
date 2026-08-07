@@ -199,10 +199,11 @@ def wav_seconds(path):
         return w.getnframes() / w.getframerate()
 
 
-def test_singing(work, voice, vocoder):
+def test_singing(work, source, voice, vocoder):
+    """`source` holds the extraction; `work` is this bank's own output dir."""
     label = Path(voice).name if voice else "stub bank"
     print(f"\nsinging ({label})")
-    vocals = work / "torture-vocals.json"
+    vocals = source / "torture-vocals.json"
 
     proc = run([sys.executable, SCRIPTS / "sing.py", vocals, "--preview",
                 "-o", work / "sing"])
@@ -225,6 +226,12 @@ def test_singing(work, voice, vocoder):
     check("no model was found and then silently skipped",
           "declined this line" not in proc.stdout,
           [l for l in proc.stdout.splitlines() if "declined" in l][:1])
+    # Where the words came from is not decoration: a bank whose phonemizer
+    # plugin was not found, or was found and belongs to another language, sings
+    # fluent nonsense and nothing else in the output says so.
+    check("the run says where pronunciations came from",
+          "  words   " in proc.stdout,
+          [l for l in proc.stdout.splitlines() if l.startswith("  words")][:1])
 
     proc = run([sys.executable, SCRIPTS / "sing.py", vocals, "--voice", voice,
                 "-o", work / "literal", "--steps", "4",
@@ -238,6 +245,52 @@ def test_singing(work, voice, vocoder):
                 "-o", work / "verse2", "--steps", "4", "--line", "2"]
                + (["--vocoder", vocoder] if vocoder else []))
     check("the second verse can be sung", proc.returncode == 0)
+
+
+def test_ensemble(work, voices, vocoder):
+    """Several banks on one score, rendered and mixed in one command.
+
+    Two parts of the torture score, two steps each: this is not asking whether
+    it sounds like anything, it is asking whether the part-to-bank mapping, the
+    parallel renders, the stem naming and the ffmpeg graph all still hold
+    together, and whether a part with no bank is reported rather than silently
+    dropped.
+    """
+    print("\nensemble (sing_ensemble.py)")
+    out = work / "ensemble"
+    # torture.ly's two verses are two lyric lines under one voice, so this is
+    # also the case that has to be addressed by line number rather than name.
+    cmd = [sys.executable, SCRIPTS / "sing_ensemble.py", HERE / "torture.ly",
+           "-o", out, "--steps", "2", "--jobs", "2",
+           "--voice", f"1={voices[0]}", "--voice", f"2={voices[-1]}",
+           "--gain", "1=-2", "--pan", "2=0.4"]
+    if vocoder:
+        cmd += ["--vocoder", vocoder]
+    proc = run(cmd)
+    if not check("sing_ensemble.py renders two parts with two banks",
+                 proc.returncode == 0):
+        return
+    check("it writes one stem per part",
+          (out / "stems" / "1.wav").exists() and (out / "stems" / "2.wav").exists())
+    check("and one mix", (out / "torture.mp3").exists())
+    check("it reports what each bank used", "models  acoustic" in proc.stdout)
+    check("levels are measured, not assumed", "dBFS while singing" in proc.stdout)
+    check("--gain and --pan reach the mix", "-2" in proc.stdout and "+0.40" in proc.stdout,
+          [l for l in proc.stdout.splitlines() if "dBFS while singing" in l][:2])
+
+    for flag, expect, what in (
+            (["--voice", "nosuchpart=" + str(voices[0])], "no part named",
+             "a part that is not in the score"),
+            (["--voice", f"singer={voices[0]}"], "more than one verse",
+             "a voice name covering two verses"),
+            (["--voice", f"1={SCRIPTS}"], "no dsconfig.yaml",
+             "a bank path that is not a bank"),
+            ([], "This score's parts are", "no --voice at all")):
+        proc = run([sys.executable, SCRIPTS / "sing_ensemble.py",
+                    HERE / "torture.ly", "-o", out] + flag)
+        check(f"{what} is refused with a useful message",
+              proc.returncode != 0 and expect in (proc.stdout + proc.stderr),
+              (proc.stdout + proc.stderr).strip().splitlines()[-1][:70])
 
 
 def test_predictors(work, voice, vocoder, real):
@@ -303,6 +356,24 @@ def test_predictors(work, voice, vocoder, real):
               float(np.median(np.abs(curve - written))) < 2.0,
               "a model output far from the score means wrong units")
 
+    # dsvariance: the newer export takes the four curves back as inputs, so a
+    # caller that only reads them declines the model and the run falls back to
+    # flat curves without anything having failed.
+    if voiced.predictors.variance is not None:
+        import numpy as np
+        model = voiced.predictors.variance
+        curves = model.predict([p for p, _a, _b in timeline], ph_seconds,
+                               written, frames)
+        if check("dsvariance returns curves", curves is not None,
+                 model.declined or ""):
+            check("one per parameter the folder says it predicts",
+                  set(curves) == set(model.wanted()),
+                  f"{sorted(curves)} vs {sorted(model.wanted())}")
+            check("each curve is one value per acoustic frame",
+                  all(len(c) == frames for c in curves.values()))
+            check("and they are log-domain offsets, not gains",
+                  all(float(np.max(np.abs(c))) < 96 for c in curves.values()))
+
 
 # ---------------------------------------------------------------------- main
 
@@ -318,12 +389,21 @@ def main():
 
     tmp = Path(tempfile.mkdtemp(prefix="lilypond-selftest-"))
     print(f"working in {tmp}")
-    voice, vocoder = args.voice, args.vocoder
-    if not voice:
-        proc = run([sys.executable, HERE / "make_stub_bank.py"], cwd=tmp)
-        if proc.returncode != 0:
-            sys.exit("could not build the stub bank -- pip install onnx")
-        voice = tmp / "stubvoice"
+    voices, vocoder = [], args.vocoder
+    if args.voice:
+        voices = [args.voice]
+    else:
+        # Both export conventions, because they declare different tensors and
+        # the pipeline handles each differently: `speedup` against `steps`,
+        # a step-count depth against a fractional one, a phoneme table counted
+        # by line against one with explicit ids, and a variance model that
+        # takes its curves back as inputs. Every one of those was found in a
+        # real bank, and the classic stub alone catches none of them.
+        for flag in ([], ["--continuous"]):
+            proc = run([sys.executable, HERE / "make_stub_bank.py"] + flag, cwd=tmp)
+            if proc.returncode != 0:
+                sys.exit("could not build the stub bank -- pip install onnx")
+        voices = [tmp / "stubvoice", tmp / "stubvoice-continuous"]
 
     doc = test_extraction(tmp)
     test_render(tmp, args.video)
@@ -331,8 +411,10 @@ def main():
     test_mix_errors(tmp)
     test_eq_parsing()
     if doc:
-        test_singing(tmp, voice, vocoder)
-        test_predictors(tmp, voice, vocoder, bool(args.voice))
+        for i, voice in enumerate(voices):
+            test_singing(tmp / f"sing{i}", tmp, voice, vocoder)
+            test_predictors(tmp, voice, vocoder, bool(args.voice))
+        test_ensemble(tmp, voices, vocoder)
 
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
     for name in FAIL:

@@ -1,6 +1,6 @@
 ---
 name: lilypond-music
-description: Write, engrave, and play back original music with LilyPond, and turn a score into a video where a playhead follows the notation bar by bar. Use this skill whenever the user asks to compose, notate, arrange, transcribe, harmonise, or "write music", asks for sheet music, a score, a PDF of notation, a MIDI file, or an audio rendering of music, asks for a scrolling-score or "sheet music with the music playing" video, or asks about LilyPond, staves, clefs, lyrics under a melody, chord charts, guitar tab, drum notation, or instrument parts, or asks for the words of a song to be actually sung -- a vocal, a singer, singing synthesis, a neural voice on the melody -- even if they never say "LilyPond" and even if they only ask for "a short piece" or "something that sounds like X".
+description: Write, engrave, and play back original music with LilyPond, and turn a score into a video where a playhead follows the notation bar by bar. Use this skill whenever the user asks to compose, notate, arrange, transcribe, harmonise, or "write music", asks for sheet music, a score, a PDF of notation, a MIDI file, or an audio rendering of music, asks for a scrolling-score or "sheet music with the music playing" video, or asks about LilyPond, staves, clefs, lyrics under a melody, chord charts, guitar tab, drum notation, or instrument parts, or asks for the words of a song to be actually sung -- a vocal, a singer, singing synthesis, a neural voice on the melody -- including several singers at once: an a cappella arrangement, close harmony, a choir, SATB, a canon or round, backing vocals, or a different voice on each part -- even if they never say "LilyPond" and even if they only ask for "a short piece" or "something that sounds like X".
 ---
 
 # Writing and visualising music with LilyPond
@@ -99,9 +99,22 @@ audible in seconds rather than minutes. Only the timbre is fake.
 
 The voicebank is a separate download and is not bundled: English DiffSinger
 banks are almost all non-commercial and several forbid redistribution. Read the
-bank's terms. `references/singing-synthesis.md` covers what a bank has to
-contain, what the pipeline models and what it does not, and how to write lyrics
-that come out intelligible.
+bank's terms. `references/singing-synthesis.md` section 2 lists the banks that
+have actually been run through this pipeline, with their release URLs and what
+each one is good for -- TIGER, CANARY, TRITON and LIEE all work, and they differ
+in ways that matter (voice modes, phoneme sets, whether an English phonemizer
+ships with them). Section 8 is what varies between banks, and
+`python3 scripts/dev/bank_check.py ~/voices/mybank` qualifies an unfamiliar one
+in about two minutes: what it declares, which models were actually used, where
+its pronunciations came from, and how far the rendered notes sit from the
+written ones.
+
+**Unpack one bank per directory.** The phonemizer plugin -- the `.dll` in the
+pack, which is where a bank's real vocabulary lives -- is looked for beside the
+bank, and it must be the one for the language you are singing. Every run prints
+which plugin it chose and how far that plugin agrees with the bank's own
+dictionary; a low number there means the words are being pronounced by another
+language's rules, which sounds fluent and is wrong.
 
 A bank usually ships more than the acoustic model, and all of it is used: a
 `dsdur` model decides how each syllable's time divides between its consonants
@@ -117,6 +130,36 @@ Two things are worth knowing before writing the vocal part:
   reassembled from it before being looked up in the bank's dictionary --
   "lan" and "terns" phonemise to nothing like "lanterns".
 - **Leave rests to breathe in.** A rest over 0.6s becomes a phrase boundary.
+
+### Several singers, or none of them accompanied
+
+A score with more than one named vocal part can have a different bank on each
+of them, which is how an a cappella arrangement, a close-harmony group or an
+SATB choir gets made. One command does the lot:
+
+```bash
+python3 scripts/sing_ensemble.py score.ly -o out/ \
+    --voice soprano=~/voices/liee --voice alto=~/voices/canary \
+    --voice tenor=~/voices/tiger  --voice bass=~/voices/triton
+```
+
+It renders each part with its own bank, prints what each one actually used,
+writes a dry stem per part for a DAW, and mixes them with a measured balance
+(banks differ by about 5 dB), a choir's placement and a built reverb, because
+four dry mono stems summed flat sound like four separate booths.
+`songs/tide-and-lantern.ly` is a worked example and `songs/notes.md` records
+the command that made it.
+
+**For a score video of an unaccompanied piece, mute the instrumental** --
+`render.py` performs the score's MIDI as well, so without
+`--mix "soprano=mute,alto=mute,..."` a piano doubles the choir.
+
+`references/singing-synthesis.md` section 10 is the whole workflow: what to
+check before rendering anything, the nine things that save time in the order
+they save it, and a table of what each common mistake sounds like. The two that
+cost the most: a part whose syllable count disagrees with its note count sings
+a syllable early from that bar onwards, and `--expressiveness` left at 1.0
+gives four singers each drifting 20 cents, which is a chord that never settles.
 
 `python3 scripts/vocal_score.py score.ly -o out/` runs just the extraction and
 prints what it found -- sung notes, melismata, words -- which is the fastest way
@@ -244,9 +287,11 @@ glance at a thumbnail.
 - `references/gm-instruments.md` -- all 128 General MIDI instrument names as
   LilyPond spells them, plus the drum note vocabulary.
 - `references/singing-synthesis.md` -- the vocal pipeline: obtaining and
-  licensing a voicebank, how syllables are assigned to notes and phonemes to
-  syllables, how the pitch curve is built, what is not modelled, troubleshooting,
-  and why converting the score to MusicXML is the wrong way round.
+  licensing a voicebank (section 2 names four that were tested and where to get
+  them), how syllables are assigned to notes and phonemes to syllables, how the
+  pitch curve is built, what is not modelled, what differs between banks and how
+  to qualify a new one (sections 8 and 9), troubleshooting, and why converting
+  the score to MusicXML is the wrong way round.
 
 ## Scripts
 
@@ -264,6 +309,9 @@ glance at a thumbnail.
   onnxruntime, or with the built-in preview voice (`--preview`).
   `--inspect` prints everything a bank declares, which is where to start with an
   unfamiliar one.
+- `scripts/sing_ensemble.py` -- one bank per part for a whole score: renders
+  them all, reports what each bank used, writes a stem each, and mixes them
+  into an a cappella track. The one command for choral and close-harmony work.
 - `scripts/predictors.py` -- the bank's optional `dsdur`, `dspitch` and
   `dsvariance` models: what each tensor means, how that was established, and
   the bounds placed on them.
@@ -274,6 +322,11 @@ glance at a thumbnail.
   (`python3 scripts/phonemizer.py ~/voices/mybank lanterns drift`) to see how a
   bank will pronounce a word, and whether that pronunciation is a guess.
 - `scripts/dev/selftest.py` -- runs the whole pipeline against a score written
-  to break it and checks 50-odd invariants. Run it after changing any of the
-  above; `--video` includes playhead verification, `--voice` uses a real bank
-  instead of a stub.
+  to break it and checks 80-odd invariants, against stub banks in both of the
+  export conventions real banks use. Run it after changing any of the above;
+  `--video` includes playhead verification, `--voice` uses a real bank instead
+  of a stub.
+- `scripts/dev/bank_check.py` -- qualifies one voicebank: what it declares,
+  which of its models the pipeline actually fed, where its pronunciations came
+  from, and measured pitch and vowel placement on a rendered line. The first
+  thing to run on a bank nobody has tried here.
