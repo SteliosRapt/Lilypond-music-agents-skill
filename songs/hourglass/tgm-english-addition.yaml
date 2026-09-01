@@ -1,0 +1,26 @@
+# One entry appended to each bank's dsdur/dsdict-en.yaml before rendering
+# "Hourglass". Append it to TIGER's, CANARY's and TRITON's alike -- all three
+# ship the same English dictionary and the same diffs_en_tgm_alpha phonemizer,
+# and all three need this.
+#
+# Why: the hocket sets "ev'ry" as two separate sung syllables, so the second
+# one reaches the phonemizer on its own as "'ry". Stripped of punctuation that
+# is looked up as "ry", which is in neither the bank's 10,076-entry dictionary
+# nor the plugin's 133,102-entry one, so the neural G2P guesses -- and it
+# guesses "r ay". The bank sings "rye".
+#
+# The transcription is read off the bank's own entries rather than invented:
+#
+#     every -> [eh, v, r, iy]        so the second syllable is [r, iy]
+#     very  -> [v, eh, r, iy]
+#     merry -> [m, eh, r, iy]
+#
+# phonemes.lookup() tries the bank's dictionary before the plugin, and tries
+# the word with its apostrophe removed as its second key, so an entry under
+# "ry" is what "'ry" finds.
+#
+# Quote every grapheme. Unquoted, YAML reads `on`, `no`, `yes` and `off` as
+# booleans and the entry is silently stored under `True`.
+
+entries:
+- {grapheme: "ry", phonemes: [r, iy]}

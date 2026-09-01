@@ -20,10 +20,12 @@ up two artefacts by hand.
 [`songs/`](songs/) holds two worked examples. "Tide and Lantern" is 28 bars of
 unaccompanied SATB with a different neural voicebank on each part, and
 [`songs/notes.md`](songs/notes.md) records exactly how it was made.
-[`songs/hourglass/`](songs/hourglass/) is "Hourglass": four voices, celesta,
-strings, timpani and piano, a palindrome in four tempi whose middle section is
-a hocket over a Shepard rise in 7/8 — rendered through the instrumental
-pipeline, with [its own notes](songs/hourglass/notes.md).
+[`songs/hourglass/`](songs/hourglass/) is "Hourglass": four sung voices over
+celesta, strings, timpani and piano, a palindrome in four tempi whose middle
+section is a hocket over a Shepard rise in 7/8. It uses both halves of the
+pipeline at once — voicebanks on the four vocal parts, fluidsynth on the six
+instrumental ones — and [its own notes](songs/hourglass/notes.md) record the
+range probe behind the casting and what the pitch came out at.
 
 ## Layout
 
