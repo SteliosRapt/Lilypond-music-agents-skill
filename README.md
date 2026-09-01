@@ -17,9 +17,13 @@ the picture and the sound, so a video showing the score while the music plays
 can be built with guaranteed agreement between the two, rather than by lining
 up two artefacts by hand.
 
-[`songs/`](songs/) is a worked example — "Tide and Lantern", 28 bars of
-unaccompanied SATB with a different neural voicebank on each part —
-and [`songs/notes.md`](songs/notes.md) records exactly how it was made.
+[`songs/`](songs/) holds two worked examples. "Tide and Lantern" is 28 bars of
+unaccompanied SATB with a different neural voicebank on each part, and
+[`songs/notes.md`](songs/notes.md) records exactly how it was made.
+[`songs/hourglass/`](songs/hourglass/) is "Hourglass": four voices, celesta,
+strings, timpani and piano, a palindrome in four tempi whose middle section is
+a hocket over a Shepard rise in 7/8 — rendered through the instrumental
+pipeline, with [its own notes](songs/hourglass/notes.md).
 
 ## Layout
 
@@ -29,7 +33,7 @@ lilypond-music/        the skill itself; this is what you install
   references/          the detail: notation, audio, video, singing
   assets/              templates, and the LilyPond instrumentation the tools need
   scripts/             the pipeline
-songs/                 a finished piece, its score, and how it was made
+songs/                 finished pieces, their scores, and how they were made
 docs/                  notes for working on the skill rather than with it
 ```
 
