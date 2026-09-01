@@ -189,6 +189,16 @@ than treating it as an error.
 **Concatenating segments.** Use the concat demuxer with `-c:v copy`; re-encoding
 each segment twice costs time and quality for nothing.
 
+**Segment lengths are rounded to whole frames, and the rounding adds up.**
+`-t 12.573` on a 24 fps segment produces 302 frames, which is 12.583 s: every
+page boundary that does not fall on the frame grid lands late by up to one
+frame, and the concat demuxer simply butts the segments together, so after
+eighteen pages the playhead can trail the audio by several frames. On a slow
+5/4 bar that was a 9 px miss in verification. `render.py` therefore snaps each
+page's start and end to the frame grid before cutting the segment and draws
+the playhead against the snapped start, which bounds the error at half a frame
+for the whole piece instead of letting it grow with the page count.
+
 **Encoder speed.** Dozens of stacked filters slow encoding to well below
 real time. Prefer few filters with piecewise expressions over many filters with
 `enable` windows, and use `-preset veryfast` -- for a static page with one moving

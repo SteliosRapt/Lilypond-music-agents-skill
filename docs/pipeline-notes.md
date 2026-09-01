@@ -198,6 +198,11 @@ loop: while position < len(word): pred = f(src, history, position)
 - `--inspect` walked one directory level, so it never reached
   `dsdur/files/*.onnx` -- exactly the models it exists to describe -- and
   printed 690 KB dictionaries in full. It recurses and summarises now.
+- **Video page segments drifted against the audio.** Each page segment is cut
+  with `-t` to a whole number of frames, always rounded up, and eighteen pages
+  of that summed to several frames of playhead lag, failing verification on
+  the slow bars of a long score. Page boundaries are now snapped to the frame
+  grid before cutting (`build_video`), so the error is bounded at half a frame.
 - `equalizer=...:t=h:w=0.7` is not a shelf. `t` names the *unit* of the width,
   not the shape; that spelling gives a bell 0.7 Hz wide, which measured as a
   0.02 dB change. Shelves are `highshelf`/`lowshelf`.

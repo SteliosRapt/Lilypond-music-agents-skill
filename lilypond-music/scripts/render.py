@@ -472,6 +472,16 @@ def build_video(pages, bars, frame, work, out_mp4, audio, audio_dur,
         t_end = bars[index][1] if index < len(bars) else audio_dur
         if p == len(pages) - 1:
             t_end = max(t_end, audio_dur)
+        # Snap both ends of the page to the frame grid.  ffmpeg cuts each
+        # segment to a whole number of frames, so a page whose length is not a
+        # multiple of 1/fps would otherwise be rounded (upwards), and over
+        # twenty pages those rounding errors add up to several frames of lag
+        # between playhead and audio -- enough to fail verification on a slow
+        # bar.  Placing every boundary on the grid keeps the error within half
+        # a frame for the whole piece, and the times below are made relative to
+        # the snapped start so the playhead is drawn against the same clock.
+        t_start = round(t_start * fps) / fps
+        t_end = round(t_end * fps) / fps
         duration = t_end - t_start
 
         bg_path = os.path.join(work, f"bg{p}.png")
