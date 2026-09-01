@@ -251,7 +251,8 @@ def eq_stage(stage):
         "2500+3 or 400-3/1.4")
 
 
-def master_chain(dur, reverb, tail, limit=False, eq=(), band=(35.0, 9500.0)):
+def master_chain(dur, reverb, tail, limit=False, eq=(), band=(35.0, 9500.0),
+                 normalise=True):
     """Shared post-processing: room, tone, band limits, levelling, tail fade.
 
     Order is not cosmetic. Reverb first, so the room is coloured with
@@ -274,9 +275,12 @@ def master_chain(dur, reverb, tail, limit=False, eq=(), band=(35.0, 9500.0)):
         # summing several parts can peak above unity where one part never did
         chain.append("alimiter=limit=0.95")
     low, high = band
-    chain += [f"highpass=f={low:.0f}", f"lowpass=f={high:.0f}",
-              "dynaudnorm=p=0.65:m=5",
-              f"afade=t=out:st={max(dur - tail, 0):.2f}:d={tail:.2f}"]
+    chain += [f"highpass=f={low:.0f}", f"lowpass=f={high:.0f}"]
+    if normalise:
+        # evens the level out over the piece; a score that lives on the contrast
+        # between its pp and its fff wants this off (--no-normalise)
+        chain.append("dynaudnorm=p=0.65:m=5")
+    chain.append(f"afade=t=out:st={max(dur - tail, 0):.2f}:d={tail:.2f}")
     return chain
 
 
@@ -287,7 +291,7 @@ def duration_of(path):
 
 def synthesize(midi, work, out_mp3, soundfont=None, gain=1.0, reverb=True, tail=3.0,
                mix=None, parts=None, vocal=None, vocal_gain=0.0, eq=None,
-               master_eq=(), vocal_eq=(), band=(35.0, 9500.0)):
+               master_eq=(), vocal_eq=(), band=(35.0, 9500.0), normalise=True):
     """MIDI -> mastered mp3, in one pass or as a per-part mix.
 
     Without `mix` or `eq` the whole file goes through fluidsynth once, which is
@@ -306,7 +310,7 @@ def synthesize(midi, work, out_mp3, soundfont=None, gain=1.0, reverb=True, tail=
     if not per_part and not vocal:
         wav = os.path.join(work, "raw.wav")
         render_midi(midi, wav)
-        chain = master_chain(duration_of(wav), reverb, tail, eq=master_eq,
+        chain = master_chain(duration_of(wav), reverb, tail, eq=master_eq, normalise=normalise,
                              band=band)
         run(["ffmpeg", "-y", "-i", wav, "-af", ",".join(chain),
              "-c:a", "libmp3lame", "-b:a", "192k", out_mp3])
@@ -317,8 +321,8 @@ def synthesize(midi, work, out_mp3, soundfont=None, gain=1.0, reverb=True, tail=
         wav = os.path.join(work, "raw.wav")
         render_midi(midi, wav)
         longest = max(duration_of(wav), duration_of(vocal))
-        master = ",".join(master_chain(longest, reverb, tail, True, master_eq,
-                                       band))
+        master = ",".join(master_chain(longest, reverb, tail, True, master_eq, band,
+                                       normalise=normalise))
         graph = [f"[1:a]{','.join(list(vocal_eq) + [f'volume={vocal_gain:.2f}dB'])}[v]",
                  "[0:a][v]amix=inputs=2:normalize=0[sum]",
                  f"[sum]{master}[out]"]
@@ -357,7 +361,8 @@ def synthesize(midi, work, out_mp3, soundfont=None, gain=1.0, reverb=True, tail=
         sung = list(vocal_eq) + [f"volume={vocal_gain:.2f}dB"]
         graph.append(f"[{len(stems)}:a]{','.join(sung)}[sung]")
         labels.append("[sung]")
-    master = ",".join(master_chain(longest, reverb, tail, True, master_eq, band))
+    master = ",".join(master_chain(longest, reverb, tail, True, master_eq, band,
+                                   normalise=normalise))
     graph.append(f"{''.join(labels)}amix=inputs={len(labels)}:normalize=0[sum]")
     graph.append(f"[sum]{master}[out]")
     cmd += ["-filter_complex", ";".join(graph), "-map", "[out]",
@@ -728,7 +733,7 @@ def make_audio(args, art, parts, work, out_mp3):
                            args.gain, not args.no_reverb, mix=mix, parts=parts,
                            vocal=args.vocal, vocal_gain=args.vocal_gain,
                            eq=eq, master_eq=master_eq, vocal_eq=vocal_eq,
-                           band=band)
+                           band=band, normalise=not args.no_normalise)
     report_mix(parts, mix, eq, master_eq, args, vocal_eq)
     print(f"  {audio_dur:.1f}s")
     return audio_dur
@@ -822,6 +827,9 @@ def main():
     ap.add_argument("--list-tracks", action="store_true",
                     help="print the parts available to --mix and --eq, then stop")
     ap.add_argument("--no-reverb", action="store_true")
+    ap.add_argument("--no-normalise", action="store_true",
+                    help="skip the dynamic level normaliser in mastering, keeping "
+                         "the score's own pp-to-fff range")
     ap.add_argument("--no-swell", action="store_true",
                     help="skip CC11 expression: hairpins across held notes stay silent")
     ap.add_argument("--swell-depth", type=float, default=0.4, metavar="D",

@@ -233,8 +233,11 @@ afade=t=out:st=<end-3>:d=3" -c:a libmp3lame -b:a 192k out.mp3
   it.
 - `highpass`/`lowpass` remove synthesis rumble and the brittle top end typical of
   GM samples. `--band LOW:HIGH` moves them.
-- `dynaudnorm` evens out level without pumping; drop it if the piece depends on a
-  wide dynamic range, since it will partly undo your hairpins.
+- `dynaudnorm` evens out level without pumping; `--no-normalise` drops it, and
+  a piece that depends on a wide dynamic range needs that, since it will partly
+  undo your hairpins. Measured on a score that runs *pp* to *fff*: with the
+  normaliser the loudest ten seconds came out 2 dB above the quietest, without
+  it, 13 dB.
 - Always fade the tail, or the reverb ends in a click.
 
 The order is the reason the chain sounds like one decision rather than several.

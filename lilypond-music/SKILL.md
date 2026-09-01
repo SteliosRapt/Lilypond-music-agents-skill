@@ -37,6 +37,8 @@ Useful flags: `--size 1920x1080` (landscape; default is 1080x1920 portrait),
 stereo balance -- the fix for a score that is notated right but sounds
 unbalanced) and `--eq "koto=warm,drums=hp:120,pad=distant"` (per-part tone -- the
 fix for parts that are balanced and still fight each other),
+`--no-normalise` (keep the score's own *pp*-to-*fff* range instead of levelling
+it -- for a piece whose form is its dynamics),
 `--verify 8` (sample 8 frames to confirm sync), `--keep-temp` (inspect
 intermediates in `out/.<stem>-work/`), `--vocal out/score-vocal.wav` (mix in a
 sung line, with `--vocal-gain` and `--vocal-eq`).
