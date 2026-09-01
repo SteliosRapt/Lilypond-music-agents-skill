@@ -319,7 +319,7 @@ altoMusic = {
 }
 
 altoWords = \lyricmode {
-  Mm __ _ _ _ _ _ _ _
+  Mm __ _ _ _ _ _ _ _ _
   \hocketAWords
   Break! let it break, let it spill, ev -- "’ry" grain a year,
   ev -- "’ry" year a grain, fall! fall! fall! fall!
@@ -345,7 +345,7 @@ tenorMusic = {
 }
 
 tenorWords = \lyricmode {
-  Mm __ _ _ _ _ _ _ _
+  Mm __ _ _ _ _ _ _ _ _
   \hocketTWords
   Break! let it break, let it spill, ev -- "’ry" grain a year,
   ev -- "’ry" year a grain, fall! fall! fall! fall!
@@ -372,7 +372,7 @@ bassMusic = {
 }
 
 bassWords = \lyricmode {
-  Mm __ _ _ _ _ _ _ _ _
+  Mm __ _ _ _ _ _ _ _ _ _
   \hocketBWords
   Break! let it break, let it spill, ev -- "’ry" grain a year,
   ev -- "’ry" year a grain, fall! fall! fall! fall!

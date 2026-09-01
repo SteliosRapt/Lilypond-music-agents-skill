@@ -279,6 +279,15 @@ tempo would put every note before the first change at the wrong time.
 - **`_` in `\lyricmode` means "no syllable here"**, and reaches this pipeline
   as a syllable whose text is a single space. It is dropped, and the note
   becomes a melisma on the vowel before it.
+- **Count the `_` against the notes, especially under a held hum.** `__` draws
+  an extender line and consumes no note; only `_` consumes one. A lyric that
+  supplies fewer slots than the part has syllable-bearing notes does not fail
+  and is not warned about: LilyPond takes the next word in the stream, so the
+  part borrows the opening word of the *following* phrase and then runs one
+  syllable ahead for the rest of the piece. The symptom appears bars later and
+  in another section, which is why it is worth checking at the source --
+  `vocal_score.py` prints the syllable actually resolved onto every note, and a
+  hummed part that shows more than one of them has this bug.
 
 ## 7. What is and is not modelled
 
