@@ -127,7 +127,7 @@ sopranoWords = \lyricmode {
   \hocketSWords
   Break! let it break, let it spill, ev -- "’ry" grain a year,
   ev -- "’ry" year a grain, fall! fall! fall! fall!
-  Ah __ _ _ _ _ _ sand, as shall we fall.
+  Ah Ah Ah Ah Ah Ah sand, as shall we fall.
 }
 
 %% --------------------------------------------------------------------- alto
@@ -149,15 +149,20 @@ altoMusic = {
 }
 
 altoWords = \lyricmode {
-  Mm __ _ _ _ _ _ _ _ _
+  Mm Mm Mm Mm Mm Mm Mm Mm Mm
   \hocketAWords
   Break! let it break, let it spill, ev -- "’ry" grain a year,
   ev -- "’ry" year a grain, fall! fall! fall! fall!
-  Ah __ _ _ _ _ _ sand, as shall we fall.
+  Ah Ah Ah Ah Ah Ah sand, as shall we fall.
 }
 
 %% -------------------------------------------------------------------- tenor
-tenorMusic = {
+%% Written where a tenor staff is read -- the treble_8 clef means this part
+%% sounds an octave below the printed pitch, and \transpose is what makes
+%% LilyPond's MIDI agree with the clef. Without it the tenor sounded in unison
+%% with the soprano: same range, same pitch on 58 of their 91 shared onsets,
+%% which is three parts fused into one audible line instead of three.
+tenorMusic = \transpose c' c {
   \clef "treble_8"
   R4*5*2 |
   c''1\pp~ c''4 | aes'1~ aes'4 | c''1~ c''4 | bes'2. aes'2 |
@@ -175,7 +180,7 @@ tenorMusic = {
 }
 
 tenorWords = \lyricmode {
-  Mm __ _ _ _ _ _ _ _ _
+  Mm Mm Mm Mm Mm Mm Mm Mm Mm
   \hocketTWords
   Break! let it break, let it spill, ev -- "’ry" grain a year,
   ev -- "’ry" year a grain, fall! fall! fall! fall!
@@ -202,11 +207,11 @@ bassMusic = {
 }
 
 bassWords = \lyricmode {
-  Mm __ _ _ _ _ _ _ _ _ _
+  Mm Mm Mm Mm Mm Mm Mm Mm Mm Mm
   \hocketBWords
   Break! let it break, let it spill, ev -- "’ry" grain a year,
   ev -- "’ry" year a grain, fall! fall! fall! fall!
-  Mm __ _ _ _ _ _ _ sand, as shall we fall.
+  Mm Mm Mm Mm Mm Mm Mm sand, as shall we fall.
 }
 
 %% ------------------------------------------------------------------ celesta
