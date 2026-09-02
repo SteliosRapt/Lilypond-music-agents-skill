@@ -140,10 +140,14 @@ instrumental with `render.py --vocal`. The synthetic `choir aahs` and
 
 | part | bank | mode | why |
 |---|---|---|---|
-| Soprano | CANARY v106 | `canary_arc` | the most even of the three across the range, and the soprano is the only part that has to hold E♭5 |
+| Soprano | TIGER v102 | `tiger_fresh` | the top line is exposed by register and needs no help, so it takes the quietest bank |
 | Alto | TRITON v106 | `triton_tempest` | a different colour of the same bank as the bass, two octaves away from it |
-| Tenor | TIGER v102 | `tiger_fresh` | carries the retrograde tune in part IV, buried in the middle of the texture, and TIGER is the quietest bank — the part that must be heard should not be the one fighting to be heard |
+| Tenor | CANARY v106 | `canary_arc` | the most even and the loudest of the three, given to the part most easily buried — the tenor sits in the middle register where the piano and celesta also live, and carries the retrograde tune |
 | Bass | TRITON v106 | `triton_gale` | measured the most even of the three below C3, which is where this part lives |
+
+The tenor also takes `--gain +1.5` and the alto `+1` on top of the measured
+balance, and the inner voices are panned a little wider than the default
+semicircle, because the middle of the stereo image is where the piano is.
 
 ### Three banks, not four
 
@@ -193,7 +197,7 @@ bank's `dsdur/dsdict-en.yaml`, in the convention its own entries use
 The bank's own dictionary is consulted before the plugin, so that entry wins,
 and no note or syllable in the score had to move for it.
 
-### What singing it found: an off-by-one in the underlay
+### What engraving hid, 1: an off-by-one in the underlay
 
 Putting words in the air exposed a defect that the engraving hid. In part I the
 alto, tenor and bass hum one syllable — `Mm __ _ _ _ _ _ _ _` — and that lyric
@@ -231,6 +235,57 @@ does not fail, it borrows from the next phrase, and the error surfaces bars
 later in a different section. Counting `_` against syllable-bearing notes is
 worth doing wherever a part hums under a texture.
 
+### What engraving hid, 2: two voices nobody could hear
+
+The first listen to the sung mix returned a verdict no measurement had caught:
+only two voices were audible, the top line and the bass. Two separate defects
+were behind it, and neither was a property of the voicebanks — swapping banks,
+or putting the same bank on all four parts, would have changed nothing.
+
+**The tenor was written an octave too high.** `\clef "treble_8"` is a printing
+convention: it means the part sounds an octave below the printed pitch, and it
+does not transpose anything. The pitches were typed at soprano level, so the
+tenor *sounded* in unison with the soprano. Measured across the whole piece:
+
+| pair | identical sounding pitch |
+|---|---|
+| soprano vs tenor | 58 of 91 shared onsets |
+| soprano vs alto | 44 of 96 |
+| alto vs tenor | 37 of 83 |
+
+Soprano, alto and tenor all occupied exactly C4–E5, and the first chord of the
+tutti was C5, C5, C5, C3. Three parts in unison fuse into one line no matter
+what timbre each carries — that is what "only the top voice and the bass"
+means. `tenorMusic` is now wrapped in `\transpose c' c`, so the MIDI agrees
+with the clef, the notes agree with what these notes always claimed, and the
+tutti is C5, C5, C4, C3: three octaves, with the soprano and alto doubling as
+the design's "register pair" intends. The tenor now shares no pitch at all with
+the soprano or the alto.
+
+**And three parts were holding one syllable for fifty seconds.** The hummed
+inner parts of part I were set as a single `Mm` with the rest of the notes
+under extenders and skips. That is legitimate notation and unsingable:
+
+| | longest single syllable | share of the piece inside one |
+|---|---|---|
+| alto | 50.0 s on `Mm` | 111 s of 208 |
+| bass | 50.0 s on `Mm` | 111 s of 208 |
+| tenor | 50.0 s on `Mm` | 72 s |
+| soprano | 38.6 s on `Ah` | 61 s |
+
+A DiffSinger acoustic model is asked for one vowel across that whole span and
+returns something that decays to nothing, so those parts were literally silent
+through part I and most of part IV. The fix is to re-attack the hum on every
+note — `Mm __ _ _ _` becomes `Mm Mm Mm Mm` — which is what a choir does anyway,
+preserves the slot count exactly, and moves no pitch and no rhythm. The longest
+held syllable is now 6.8 s.
+
+The one that remains is the final chord, 22.2 s on `fall.`, and it stays:
+that is a single tied note, so re-attacking it would mean breaking the tie,
+which is a real musical change rather than a notational one. It carries a
+written diminuendo to `\!`, so the voices thinning out over it is what the
+score asks for, and the instruments hold the chord underneath.
+
 ### What was measured afterwards
 
 Every note of every stem, tracked by autocorrelation and compared against the
@@ -238,8 +293,8 @@ pitch LilyPond wrote:
 
 | | notes measured | median error | 90th percentile | over 50 cents |
 |---|---|---|---|---|
-| notes 0.4 s and longer | 104 | 4.0c | 10.5c | 0% |
-| notes shorter than 0.4 s | 292 | 10.1c | 53.6c | 12% |
+| notes 0.4 s and longer | 188 | 4.8c | 11.8c | 0% |
+| notes shorter than 0.4 s | 292 | 9.8c | 59.8c | 12% |
 
 The first row is this repository's own benchmark for `dspitch` (median 4.3
 cents, max 10.7) reproduced on a different piece with different banks. The second row is the piece asking for something the models
@@ -248,15 +303,48 @@ patter of part III, syllables 230–240 ms long, where a duration model has to
 place a consonant, a vowel and a release inside a quarter of a second. It is
 audible as a slight smearing of the fastest words, not as wrong notes.
 
+### Is each voice actually audible?
+
+The point of the two fixes above is that all four parts can be heard, so that
+was measured rather than assumed. First, how much of the piece each part is
+actually making sound (a 5-second window counts if it is above −45 dB):
+
+| part | before | after |
+|---|---|---|
+| soprano | 59% | 76% |
+| alto | 32% | 76% |
+| tenor | 51% | 76% |
+| bass | 32% | 76% |
+
+All four now sound over exactly the same 76% of the piece, which is what a
+four-part texture with rests in it should look like. Second, whether each is
+above the accompaniment where it matters — the median over every half second in
+which that part sings, of its own stem against the instrumental bed, both
+band-limited to the octaves that part occupies:
+
+| part | its band | margin over the instruments |
+|---|---|---|
+| soprano | 222–1582 Hz | +6.0 dB |
+| alto | 222–1582 Hz | +6.4 dB |
+| tenor | 111–791 Hz | +7.2 dB |
+| bass | 74–627 Hz | −1.1 dB |
+
+The bass is the one sitting level with its surroundings, because the cello, the
+piano's left hand and the timpani all live in its octaves. It reads clearly
+anyway: nothing else down there is singing words, and it is the only voice
+below C3.
+
 ### Reproducing the sung version
 
 ```bash
 python3 lilypond-music/scripts/sing_ensemble.py songs/hourglass/hourglass.ly \
     -o out/ --format flac --stem-format flac --steps 20 --jobs 1 \
-    --voice "soprano=$CANARY" --voice "alto=$TRITON" \
-    --voice "tenor=$TIGER"    --voice "bass=$TRITON" \
-    --mode soprano=canary_arc --mode alto=triton_tempest \
-    --mode tenor=tiger_fresh  --mode bass=triton_gale
+    --voice "soprano=$TIGER"  --voice "alto=$TRITON" \
+    --voice "tenor=$CANARY"   --voice "bass=$TRITON" \
+    --mode soprano=tiger_fresh --mode alto=triton_tempest \
+    --mode tenor=canary_arc    --mode bass=triton_gale \
+    --gain tenor=+1.5 --gain alto=+1 \
+    --pan soprano=-0.32 --pan alto=+0.20 --pan tenor=-0.18 --pan bass=+0.32
 
 python3 lilypond-music/scripts/render.py songs/hourglass/hourglass.ly \
     -o out/ --size 1920x1080 --verify 8 --no-normalise \
@@ -276,5 +364,26 @@ produces the same arrangement sung slightly differently, which is why the stems
 are committed rather than treated as intermediates.
 
 `--vocal-gain -5` puts the choir about 4 dB over the instruments: the sung mix
-comes out of `sing_ensemble.py` 9 dB louder than the instrumental, measured as
-the median of half-second windows above −45 dB in each.
+comes out of `sing_ensemble.py` 9.6 dB louder than the instrumental, measured as
+the median of half-second windows above −45 dB in each. `--vocal-eq vocal` with
+`--eq "piano upper=clear,piano lower=clear"` is the pairing
+`references/audio-and-midi.md` section 10.2 prescribes for a sung line sitting
+inside an ensemble rather than in front of it: lift the voice's presence band
+and take the mud out of the busiest accompanying part, rather than turning the
+voice up.
+
+Verification needed a fix to `render.py` before it would pass, and the video was
+never the problem. The check finds the playhead by the columns where red leads
+green and blue, and averaged every column that matched — including a
+single-pixel one 300 px away, dark ink anti-aliased against the warm page
+background, which happens to clear the threshold. The playhead was 0.8 px from
+where it belonged and the check read it as 31 px out. It now takes the widest
+contiguous run rather than the mean, which is what a solid bar several pixels
+wide looks like against stray ink. All 13 probes pass.
+
+Three of the eighteen systems fall back to bar-level playhead motion rather than
+note-level: their paper-column dump and their page image disagree by 8.5, 10.4
+and 23.8 px against an 8 px tolerance, and rendering at 300 dpi instead of 200
+does not change it, so it is a real geometric disagreement rather than pixel
+noise. On those systems the playhead is exact at every barline and approximate
+between them. This predates the sung version and is not specific to it.
