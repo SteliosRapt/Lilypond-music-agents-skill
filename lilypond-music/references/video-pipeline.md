@@ -186,6 +186,16 @@ mathematically exact position by up to one frame of travel. At 24 fps with wide
 bars that is several pixels -- the verification tolerance accounts for it rather
 than treating it as an error.
 
+**Finding the playhead by colour finds other things too.** The verifier locates
+the marker by the columns where red leads green and blue, and used to average
+every column that matched. Dark ink anti-aliased against a warm page background
+also matches: a single-pixel column at a barline, full height, clears the row
+threshold. One of those 300px from the playhead pulls the average far enough to
+fail a frame whose playhead is in fact within a pixel of where it belongs, and
+which of them appear shifts with the engraving, so the failure looks random.
+Take the widest contiguous run of matching columns instead of the mean -- the
+playhead is a solid bar several pixels wide, stray ink is one column.
+
 **Concatenating segments.** Use the concat demuxer with `-c:v copy`; re-encoding
 each segment twice costs time and quality for nothing.
 

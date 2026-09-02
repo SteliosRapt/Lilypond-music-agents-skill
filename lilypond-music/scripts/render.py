@@ -615,7 +615,23 @@ def verify(out_mp4, track, bars, samples, bar_w=6, fps=24, slack=4.0,
         a = np.array(Image.open(probe).convert("RGB")).astype(int)
         mask = (a[:, :, 0] - np.maximum(a[:, :, 1], a[:, :, 2])) > 40
         cols = np.where(mask.sum(axis=0) > 10)[0]
-        measured = float(cols.mean()) if len(cols) else None
+        # Take the widest contiguous run, not the mean of every matching
+        # column. The playhead is a solid bar several pixels wide; a single
+        # column can also match, because dark ink anti-aliased against a warm
+        # page background leaves pixels whose red channel leads by more than
+        # this threshold, and a full-height barline clears the row count. One
+        # such column 300px away from the playhead drags a mean far enough to
+        # fail a frame that is in fact correct.
+        measured = None
+        if len(cols):
+            runs, start = [], cols[0]
+            for prev, c in zip(cols, cols[1:]):
+                if c - prev > 3:
+                    runs.append((start, prev))
+                    start = c
+            runs.append((start, cols[-1]))
+            lo, hi = max(runs, key=lambda r: (r[1] - r[0], mask[:, r[0]:r[1] + 1].sum()))
+            measured = (lo + hi) / 2.0
         tolerance = slack + abs(xb - xa) / max((tb - ta) * fps, 1e-6)
         good = measured is not None and abs(measured - expected) <= tolerance
         ok &= good
