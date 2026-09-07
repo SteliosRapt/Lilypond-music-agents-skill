@@ -18,7 +18,7 @@ python3 lilypond-music/scripts/dev/selftest.py --video   # + playhead verificati
 
 `selftest.py` runs the unit tests first and counts them in its own total, so it
 is the one command; `test_units.py` on its own is the fast loop, and it needs
-nothing but numpy — no lilypond, no ffmpeg, no voicebank. Green before you
+numpy and pillow — no lilypond, no ffmpeg, no voicebank. Green before you
 start, green after every commit.
 
 With a real voicebank the singing half runs against that bank instead of the two
@@ -50,6 +50,20 @@ tests say:
 
 `flake8 --max-line-length=100 --extend-ignore=E731` is clean across every
 script, and worth keeping that way.
+
+**What CI runs.** `.github/workflows/checks.yml`, on every push and pull
+request. One fast job — flake8, `test_units.py` and `tools/check_repo.py` — and
+one slow one that installs the toolchain and runs `selftest.py --video`. The
+fast job needs only numpy and pillow, so a broken pure function is named long
+before the pipeline job has finished installing lilypond.
+
+`tools/` holds the two things that are about the repository rather than about
+the skill, and are not installed with it:
+
+| tool | what it does |
+|---|---|
+| `tools/check_repo.py` | resolves every relative link and path-shaped code span in the Markdown, and greps for anything that should not reach a public repository. The docs here are typed by agents, so a renamed script has to fail a build rather than quietly send a reader nowhere |
+| `tools/make_media.py` | rebuilds the README's images and animation by running the real pipeline over `docs/media/demo.ly`, and refuses to ship the result if the playhead does not verify |
 
 ## 2. What the modules are
 

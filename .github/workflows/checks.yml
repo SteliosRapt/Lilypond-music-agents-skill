@@ -1,0 +1,55 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The fast loop, and the one that should stay under a minute: nothing here
+  # needs lilypond, ffmpeg or a voicebank, so a broken pure function is named
+  # long before the pipeline job has finished installing anything.
+  fast:
+    name: unit tests, lint and repository hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      # pillow as well as numpy: test_units.py imports render.py, which imports
+      # PIL at module scope. Neither needs lilypond, ffmpeg or a voicebank,
+      # which is what keeps this job fast.
+      - name: install
+        run: pip install numpy pillow flake8
+      - name: lint
+        run: flake8 --max-line-length=100 --extend-ignore=E731 lilypond-music/ tools/
+      - name: unit tests
+        run: python3 lilypond-music/scripts/dev/test_units.py
+      - name: repository hygiene
+        run: python3 tools/check_repo.py
+
+  # The whole pipeline against a score written to break it, including the
+  # playhead verification, which is the check that a video is actually in sync
+  # rather than merely produced. Stub voicebanks stand in for the real ones:
+  # every English DiffSinger bank is non-commercial and several forbid
+  # redistribution, so CI cannot download one.
+  pipeline:
+    name: full pipeline self-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: install the toolchain
+        run: bash lilypond-music/scripts/setup.sh
+      - name: install the singing dependencies
+        run: bash lilypond-music/scripts/setup-singing.sh --dev
+      - name: self-test, with playhead verification
+        run: python3 lilypond-music/scripts/dev/selftest.py --video

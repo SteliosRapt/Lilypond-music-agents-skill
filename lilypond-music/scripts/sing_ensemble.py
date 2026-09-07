@@ -218,7 +218,7 @@ def mix(args, stems, out):
 
 # ----------------------------------------------------------------------- main
 
-def main():
+def build_parser():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("score", help="score.ly, or a <stem>-vocals.json")
@@ -252,27 +252,25 @@ def main():
                          "matters if the stems are being kept rather than "
                          "treated as intermediates")
     ap.add_argument("--no-mix", action="store_true", help="stems only")
-    args = ap.parse_args()
-    args.mode = pairs(args.mode, "mode")
-    args.phonemizer = pairs(args.phonemizer, "phonemizer")
-    args.gain = pairs(args.gain, "gain", float)
-    args.pan = pairs(args.pan, "pan", float)
+    return ap
 
-    outdir = Path(args.outdir).expanduser().resolve()
-    (outdir / "stems").mkdir(parents=True, exist_ok=True)
-    doc, vocals = extract(args.score, outdir)
-    catalogue = [(entry["line"], entry["voice"]) for entry in doc["lines"]]
-    # A named voice usually means one line, but a voice with two verses under
-    # it means two, and then the name alone does not say which. Line numbers
-    # are always unambiguous, so both are accepted as the key.
+
+def resolve_parts(voice_args, catalogue):
+    """Match each `--voice PART=BANK` to a lyric line in the score.
+
+    Returns `(banks, lines)`, both keyed by the part name as the user typed
+    it. A named voice usually means one lyric line, but a voice with two
+    verses under it means two, and then the name alone does not say which.
+    Line numbers are always unambiguous, so both are accepted as the key.
+    """
     by_voice = {}
     for number, voice in catalogue:
         by_voice.setdefault(voice, []).append(number)
     listing = ", ".join(f"{name} (line {n})" for n, name in catalogue)
-    if not args.voice:
+    if not voice_args:
         die(f"no --voice given. This score's parts are: {listing}"
             f"\n  e.g. --voice {catalogue[0][1]}=~/voices/tiger")
-    banks = pairs(args.voice, "voice", lambda p: Path(p).expanduser())
+    banks = pairs(voice_args, "voice", lambda p: Path(p).expanduser())
 
     lines = {}
     for part in banks:
@@ -295,6 +293,21 @@ def main():
     if silent:
         print(f"  ! no bank for {', '.join(silent)}: "
               "those parts are not in the mix")
+    return banks, lines
+
+
+def main():
+    args = build_parser().parse_args()
+    args.mode = pairs(args.mode, "mode")
+    args.phonemizer = pairs(args.phonemizer, "phonemizer")
+    args.gain = pairs(args.gain, "gain", float)
+    args.pan = pairs(args.pan, "pan", float)
+
+    outdir = Path(args.outdir).expanduser().resolve()
+    (outdir / "stems").mkdir(parents=True, exist_ok=True)
+    doc, vocals = extract(args.score, outdir)
+    catalogue = [(entry["line"], entry["voice"]) for entry in doc["lines"]]
+    banks, lines = resolve_parts(args.voice, catalogue)
 
     print(f"\n  rendering {len(banks)} part(s), {args.jobs} at a time, "
           f"{args.steps} steps"
