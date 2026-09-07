@@ -21,8 +21,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      # pillow as well as numpy: test_units.py imports render.py, which imports
+      # PIL at module scope. Neither needs lilypond, ffmpeg or a voicebank,
+      # which is what keeps this job fast.
       - name: install
-        run: pip install numpy flake8
+        run: pip install numpy pillow flake8
       - name: lint
         run: flake8 --max-line-length=100 --extend-ignore=E731 lilypond-music/ tools/
       - name: unit tests

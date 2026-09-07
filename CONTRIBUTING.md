@@ -8,8 +8,8 @@ python3 lilypond-music/scripts/dev/test_units.py    # ~90 checks, under a second
 python3 lilypond-music/scripts/dev/selftest.py      # those plus ~90 more, ~2 min
 ```
 
-`test_units.py` needs nothing but numpy. `selftest.py` needs the toolchain
-(`bash lilypond-music/scripts/setup.sh`) and, for the singing half,
+`test_units.py` needs nothing but numpy and pillow. `selftest.py` needs the
+toolchain (`bash lilypond-music/scripts/setup.sh`) and, for the singing half,
 `bash lilypond-music/scripts/setup-singing.sh --dev`. Both run in CI on every
 pull request, alongside `flake8 --max-line-length=100 --extend-ignore=E731` and
 `python3 tools/check_repo.py`.

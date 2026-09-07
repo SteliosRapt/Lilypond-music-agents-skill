@@ -26,7 +26,9 @@ ROOT = Path(__file__).resolve().parent.parent
 # Markdown inline links, minus the images and autolinks that need no resolving.
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 # A code span is treated as a path if it looks like one: a directory we ship,
-# or a bare filename with an extension this repository actually uses.
+# or a bare filename with an extension this repository actually uses. Bare
+# names matter as much as qualified ones -- the docs say `render.py` far more
+# often than they say `scripts/render.py`, and a rename has to fail on both.
 CODE = re.compile(r"`([^`\n]+)`")
 DIRS = ("scripts/", "references/", "assets/", "songs/", "docs/", "tools/",
         "lilypond-music/", ".github/")
@@ -60,18 +62,47 @@ def tracked(suffixes=None):
             yield path
 
 
+_BASENAMES = None
+
+
+def basenames():
+    """Every filename in the tree, once. Cached: this is called per code span."""
+    global _BASENAMES
+    if _BASENAMES is None:
+        _BASENAMES = {path.name for path in tracked()}
+    return _BASENAMES
+
+
 def looks_like_path(text):
-    if " " in text or text.startswith(("-", "\\", "$", "#")):
+    if " " in text or text.startswith(("-", "\\", "$", "#", ".")):
+        return False
+    if "*" in text:            # a glob describing a family, not a file
         return False
     if text.startswith(DIRS):
         return True
-    return "/" in text and text.endswith(SUFFIXES)
+    return text.endswith(SUFFIXES)
 
 
-# Paths that name a file inside a third-party voicebank rather than inside
-# this repository. Nothing here is shipped, so nothing here can be resolved.
+# This check verifies the files this repository ships. Three kinds of name are
+# therefore out of scope by definition rather than by exception, and each is a
+# category rather than a list of whatever happened to trip the check today.
+#
+# 1. A file inside a third-party voicebank. None of them are shipped, so none
+#    of them can be resolved, and that is the point -- see the licence note.
 FOREIGN = ("dsdur/", "dspitch/", "dsvariance/", "dsconfig.yaml", "vocoder.yaml",
-           "oudep.yaml", "phonemes.txt", "acoustic.onnx", "character.yaml")
+           "oudep.yaml", "phonemes.txt", "acoustic.onnx", "character.yaml",
+           "dsdict")
+# 2. A file LilyPond itself ships and \include's. Its presence is LilyPond's
+#    business, not this repository's.
+LILYPOND = ("arabic.ly", "articulate.ly", "bagpipe.ly", "catalan.ly",
+            "deutsch.ly", "english.ly", "espanol.ly", "gregorian.ly",
+            "hel-arabic.ly", "italiano.ly", "makam.ly", "nederlands.ly",
+            "predefined-guitar-fretboards.ly", "suomi.ly", "svenska.ly",
+            "vlaams.ly")
+# 3. A stand-in in an example: `score.ly` and the outputs named after it,
+#    `name-1.midi` from the split-tracks example, `mybank` from every --voice
+#    line. These are not files and are never going to be.
+PLACEHOLDERS = ("score.", "score-", "name.", "name-", "out.", "mybank")
 
 
 def resolves(target, source):
@@ -86,11 +117,17 @@ def resolves(target, source):
     check is for -- a file that has been renamed, moved or deleted.
     """
     target = target.split("#")[0].rstrip("/")
-    if not target or target.startswith(FOREIGN):
+    if not target or target.startswith(FOREIGN + PLACEHOLDERS):
+        return True
+    if target in LILYPOND:
         return True
     bases = (source.parent, ROOT, ROOT / "lilypond-music",
              ROOT / "lilypond-music" / "scripts", source.parent.parent)
-    return any((base / target).exists() for base in bases)
+    if any((base / target).exists() for base in bases):
+        return True
+    # A bare filename: correct wherever it lives, so match it by name across
+    # the tree rather than guessing which directory the reader meant.
+    return "/" not in target and target in basenames()
 
 
 def check_links():

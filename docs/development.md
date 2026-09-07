@@ -18,7 +18,7 @@ python3 lilypond-music/scripts/dev/selftest.py --video   # + playhead verificati
 
 `selftest.py` runs the unit tests first and counts them in its own total, so it
 is the one command; `test_units.py` on its own is the fast loop, and it needs
-nothing but numpy — no lilypond, no ffmpeg, no voicebank. Green before you
+numpy and pillow — no lilypond, no ffmpeg, no voicebank. Green before you
 start, green after every commit.
 
 With a real voicebank the singing half runs against that bank instead of the two
@@ -54,8 +54,8 @@ script, and worth keeping that way.
 **What CI runs.** `.github/workflows/checks.yml`, on every push and pull
 request. One fast job — flake8, `test_units.py` and `tools/check_repo.py` — and
 one slow one that installs the toolchain and runs `selftest.py --video`. The
-fast job needs only numpy, so a broken pure function is named long before the
-pipeline job has finished installing lilypond.
+fast job needs only numpy and pillow, so a broken pure function is named long
+before the pipeline job has finished installing lilypond.
 
 `tools/` holds the two things that are about the repository rather than about
 the skill, and are not installed with it:

@@ -111,7 +111,7 @@ tools/                 repository maintenance; not part of the skill
 ## Working on it
 
 ```bash
-python3 lilypond-music/scripts/dev/test_units.py    # under a second, no deps
+python3 lilypond-music/scripts/dev/test_units.py    # under a second, numpy + pillow
 python3 lilypond-music/scripts/dev/selftest.py      # the whole pipeline, ~2 min
 ```
 
