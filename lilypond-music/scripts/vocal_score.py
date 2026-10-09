@@ -340,6 +340,54 @@ def write_tempo(measure, qpm):
     sub(direction, "sound", tempo=int(round(qpm)))
 
 
+def melisma_slurs(notes):
+    """Where each melismatic run's slur starts and stops, keyed by note index.
+
+    Slur every run of melismatic notes back to the note that started it. That
+    note is not always the one carrying the syllable: a tie can sit between
+    them (`f2 ~ f4` then a slurred run), and the slur has to reach from the
+    last sounding note, not from the last syllable.
+    """
+    slur_at, i = {}, 0
+    while i < len(notes):
+        if notes[i]["melisma"] and i > 0:
+            j = i
+            while j + 1 < len(notes) and notes[j + 1]["melisma"]:
+                j += 1
+            slur_at[i - 1], slur_at[j] = "start", "stop"
+            i = j + 1
+        else:
+            i += 1
+    return slur_at
+
+
+def open_score(part_name, fifths, beats, beat_type, qpm):
+    """The document down to its first measure, with key, metre, clef and tempo.
+
+    Returns `(root, part, measure)` -- the tree to serialise, the part to hang
+    later measures on, and the first measure to start writing notes into.
+    """
+    root = ET.Element("score-partwise", {"version": "3.1"})
+    plist = sub(root, "part-list")
+    sp = ET.SubElement(plist, "score-part", {"id": "P1"})
+    sub(sp, "part-name", part_name)
+    part = ET.SubElement(root, "part", {"id": "P1"})
+
+    measure = ET.SubElement(part, "measure", {"number": "1"})
+    attrs = sub(measure, "attributes")
+    sub(attrs, "divisions", DIVISIONS)
+    key = sub(attrs, "key")
+    sub(key, "fifths", fifths)
+    time = sub(attrs, "time")
+    sub(time, "beats", beats)
+    sub(time, "beat-type", beat_type)
+    clef = sub(attrs, "clef")
+    sub(clef, "sign", "G")
+    sub(clef, "line", 2)
+    write_tempo(measure, qpm)
+    return root, part, measure
+
+
 def musicxml(notes, meta, tempo_map, part_name, metres=()):
     """Build a one-part MusicXML score from an assembled vocal line.
 
@@ -369,48 +417,16 @@ def musicxml(notes, meta, tempo_map, part_name, metres=()):
                 cur = c
         return cur[1], cur[2]
 
-    root = ET.Element("score-partwise", {"version": "3.1"})
-    plist = sub(root, "part-list")
-    sp = ET.SubElement(plist, "score-part", {"id": "P1"})
-    sub(sp, "part-name", part_name)
-    part = ET.SubElement(root, "part", {"id": "P1"})
-
     beats, beat_type = metre_at(Fraction(0))
     bar = Fraction(beats, beat_type)
     number = 1
     remaining_changes = [c for c in changes if c[0] > 0]
     remaining_tempos = list(tempo_map[1:])
 
-    measure = ET.SubElement(part, "measure", {"number": str(number)})
-    attrs = sub(measure, "attributes")
-    sub(attrs, "divisions", DIVISIONS)
-    key = sub(attrs, "key")
-    sub(key, "fifths", fifths)
-    time = sub(attrs, "time")
-    sub(time, "beats", beats)
-    sub(time, "beat-type", beat_type)
-    clef = sub(attrs, "clef")
-    sub(clef, "sign", "G")
-    sub(clef, "line", 2)
-    write_tempo(measure, tempo_map[0][1])
-
+    root, part, measure = open_score(part_name, fifths, beats, beat_type,
+                                     tempo_map[0][1])
     cursor = Fraction(0)
-
-    # Slur every run of melismatic notes back to the note that started it.  That
-    # note is not always the one carrying the syllable: a tie can sit between
-    # them (`f2 ~ f4` then a slurred run), and the slur has to reach from the
-    # last sounding note, not from the last syllable.
-    slur_at, i = {}, 0
-    while i < len(notes):
-        if notes[i]["melisma"] and i > 0:
-            j = i
-            while j + 1 < len(notes) and notes[j + 1]["melisma"]:
-                j += 1
-            slur_at[i - 1], slur_at[j] = "start", "stop"
-            i = j + 1
-        else:
-            i += 1
-
+    slur_at = melisma_slurs(notes)
     bar_start = Fraction(0)
 
     def ensure_measure():

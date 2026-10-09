@@ -36,6 +36,78 @@ sys.path.insert(0, str(HERE.parent))
 import sing  # noqa: E402
 
 
+def load_vocoder_config(vdir):
+    """The mel parameters the release was trained with.
+
+    The package ships two yamls: vocoder.yaml has the mel parameters and
+    oudep.yaml is packaging metadata. Choosing by name is not enough -- pick
+    the one that actually declares a sample rate.
+    """
+    import yaml
+    for path in sorted(vdir.glob("*.yaml")):
+        found = yaml.safe_load(path.read_text()) or {}
+        if found.get("sample_rate"):
+            return found
+    sys.exit(f"no vocoder config with mel parameters in {vdir}")
+
+
+def mel_of(signal, cfg):
+    """The mel exactly as the release specifies it.
+
+    Magnitude (not power) mel, slaney filterbank, then log compression with a
+    1e-5 floor. Getting any of base, scale, fmin, fmax or power wrong here is
+    the difference between a voice and noise.
+    """
+    import librosa
+    mel = librosa.feature.melspectrogram(
+        y=signal.astype(np.float64), sr=cfg["sample_rate"],
+        n_fft=cfg["fft_size"], hop_length=cfg["hop_size"],
+        win_length=cfg["win_size"], n_mels=cfg["num_mel_bins"],
+        fmin=cfg["mel_fmin"], fmax=cfg["mel_fmax"], power=1.0,
+        center=True, htk=(cfg.get("mel_scale") == "htk"), norm="slaney")
+    return (np.log(np.clip(mel, 1e-5, None)) if cfg.get("mel_base") == "e"
+            else np.log10(np.clip(mel, 1e-5, None)))
+
+
+def resynth_phrase(sess, voice, phrase, clock, cfg):
+    """One phrase: preview voice in, vocoder out, and the two numbers.
+
+    Returns `(audio, start_s, n_frames, mel, f0, correlation, cents)`, where
+    `cents` is the per-frame absolute pitch error against the curve the vocoder
+    was handed, or an empty array where nothing voiced was tracked.
+
+    Analysis-resynthesis is only a check if it is measured. Re-analysing the
+    output against the mel that produced it says whether the weights and the
+    config agree; comparing the tracked pitch against the curve the vocoder was
+    handed says whether it followed it.
+    """
+    import librosa
+    SR, HOP = cfg["sample_rate"], cfg["hop_size"]
+
+    timeline, notes = sing.phonemize(voice, phrase, clock, set())
+    timeline = sing.fill_silences(voice, timeline)
+    audio, start_s = sing.preview_phrase(voice, timeline, notes, clock)
+
+    mel = mel_of(audio, cfg)
+    n_frames = mel.shape[1]
+    f0 = sing.f0_curve(notes, clock, start_s, n_frames, HOP / SR)
+    out = sess.run(None, {"mel": mel.T[None].astype(np.float32),
+                          "f0": f0[None].astype(np.float32)})[0].reshape(-1)
+
+    again = mel_of(out, cfg)
+    width = min(mel.shape[1], again.shape[1])
+    correlation = float(np.corrcoef(mel[:, :width].ravel(),
+                                    again[:, :width].ravel())[0, 1])
+
+    tracked, voiced, _p = librosa.pyin(out.astype(np.float64), fmin=65,
+                                       fmax=1000, sr=SR, hop_length=HOP)
+    want = f0[:len(tracked)]
+    good = voiced[:len(want)] & np.isfinite(tracked[:len(want)]) & (want > 0)
+    cents = (np.abs(1200 * np.log2(tracked[:len(want)][good] / want[good]))
+             if good.any() else np.array([]))
+    return out, start_s, n_frames, mel, f0, correlation, cents
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -46,26 +118,11 @@ def main():
     ap.add_argument("--line", type=int, default=1)
     args = ap.parse_args()
 
-    import librosa
     import onnxruntime as ort
-    import yaml
 
     vdir = Path(args.vocoder).expanduser().resolve()
-    # The package ships two yamls: vocoder.yaml has the mel parameters and
-    # oudep.yaml is packaging metadata. Choosing by name is not enough -- pick
-    # the one that actually declares a sample rate.
-    cfg = {}
-    for path in sorted(vdir.glob("*.yaml")):
-        found = yaml.safe_load(path.read_text()) or {}
-        if found.get("sample_rate"):
-            cfg = found
-            break
-    if not cfg:
-        sys.exit(f"no vocoder config with mel parameters in {vdir}")
-
-    SR, HOP = cfg["sample_rate"], cfg["hop_size"]
-    WIN, NFFT = cfg["win_size"], cfg["fft_size"]
-    NMEL, FMIN, FMAX = cfg["num_mel_bins"], cfg["mel_fmin"], cfg["mel_fmax"]
+    cfg = load_vocoder_config(vdir)
+    SR = cfg["sample_rate"]
     print(f"vocoder: {cfg.get('name', vdir.name)} | mel_base {cfg.get('mel_base')} "
           f"| scale {cfg.get('mel_scale')}")
 
@@ -83,51 +140,17 @@ def main():
     sess = ort.InferenceSession(str(model), opts,
                                 providers=["CPUExecutionProvider"])
 
-    def analyse(signal):
-        """The mel exactly as the release specifies it.
-
-        Magnitude (not power) mel, slaney filterbank, then log compression with
-        a 1e-5 floor. Getting any of base, scale, fmin, fmax or power wrong here
-        is the difference between a voice and noise.
-        """
-        mel = librosa.feature.melspectrogram(
-            y=signal.astype(np.float64), sr=SR, n_fft=NFFT, hop_length=HOP,
-            win_length=WIN, n_mels=NMEL, fmin=FMIN, fmax=FMAX, power=1.0,
-            center=True, htk=(cfg.get("mel_scale") == "htk"), norm="slaney")
-        return (np.log(np.clip(mel, 1e-5, None)) if cfg.get("mel_base") == "e"
-                else np.log10(np.clip(mel, 1e-5, None)))
-
     total = int((max(sing.seconds(n["when"] + n["dur"], clock)
                      for n in line["notes"]) + 1) * SR)
     track = np.zeros(total + SR, np.float32)
     correlations, cents = [], []
 
     for k, phrase in enumerate(sing.phrase_split(line["notes"], clock), 1):
-        timeline, notes = sing.phonemize(voice, phrase, clock, set())
-        timeline = sing.fill_silences(voice, timeline)
-        audio, start_s = sing.preview_phrase(voice, timeline, notes, clock)
-
-        mel = analyse(audio)
-        n_frames = mel.shape[1]
-        f0 = sing.f0_curve(notes, clock, start_s, n_frames, HOP / SR)
-        out = sess.run(None, {"mel": mel.T[None].astype(np.float32),
-                              "f0": f0[None].astype(np.float32)})[0].reshape(-1)
-
-        # Analysis-resynthesis is only a check if it is measured. Re-analysing
-        # the output against the mel that produced it says whether the weights
-        # and the config agree; comparing the tracked pitch against the curve
-        # the vocoder was handed says whether it followed it.
-        again = analyse(out)
-        width = min(mel.shape[1], again.shape[1])
-        a, b = mel[:, :width].ravel(), again[:, :width].ravel()
-        correlations.append(float(np.corrcoef(a, b)[0, 1]))
-        tracked, voiced, _p = librosa.pyin(out.astype(np.float64), fmin=65,
-                                           fmax=1000, sr=SR, hop_length=HOP)
-        want = f0[:len(tracked)]
-        good = voiced[:len(want)] & np.isfinite(tracked[:len(want)]) & (want > 0)
-        if good.any():
-            cents.append(np.abs(1200 * np.log2(tracked[:len(want)][good]
-                                               / want[good])))
+        out, start_s, n_frames, mel, f0, correlation, phrase_cents = \
+            resynth_phrase(sess, voice, phrase, clock, cfg)
+        correlations.append(correlation)
+        if len(phrase_cents):
+            cents.append(phrase_cents)
         print(f"  phrase {k}: {n_frames} frames -> {len(out) / SR:.2f}s "
               f"(mel {mel.min():.1f}..{mel.max():.1f}, "
               f"f0 {f0.min():.0f}-{f0.max():.0f} Hz), "

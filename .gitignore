@@ -15,3 +15,6 @@ voices/
 # Nothing in songs/ is ignored: the dry stems are kept as flac (13 MB,
 # bit-identical to the wavs they came from) because a re-render is a different
 # take -- diffusion is unseeded -- so they are the source, not an intermediate.
+
+# tools/make_media.py works here and cleans up after itself.
+docs/media/.work/
